@@ -143,6 +143,8 @@ probe_openclaw() {
   local cfg="$HOME/.openclaw/openclaw.json"
   local ref
   ref="$(json_str "$cfg" primary)"
+  # model 객체의 primary 가 없으면 문자열형 model 을 사용함.
+  [[ -z "$ref" ]] && ref="$(json_str "$cfg" model)"
   [[ -n "$ref" ]] && provider_of "$ref" || echo "unknown"
 }
 

@@ -65,7 +65,7 @@ powershell -ExecutionPolicy Bypass -File .\agents_status.ps1
 | antigravity | `agy`, `antigravity`, `gemini` | `~/.gemini` | 고정 `google` |
 | crush | `crush` | `~/.config/crush` | `~/.local/share/crush/crush.json` (Windows 는 `%LOCALAPPDATA%\crush\crush.json`) 의 `models.large.provider` |
 | hermes | `hermes` | `~/.hermes` | `config.yaml` 의 `model.provider` |
-| openclaw | `openclaw` | `~/.openclaw` | `openclaw.json` 의 `model.primary` 접두어 |
+| openclaw | `openclaw` | `~/.openclaw` | `openclaw.json` 의 `agents.defaults.model.primary` 접두어. 없으면 문자열형 `agents.defaults.model` 의 접두어 |
 
 Windows 에서는 `~` 가 `C:\Users\<사용자>` 로 풀림.
 

@@ -160,7 +160,10 @@ function Probe-Hermes {
 }
 
 function Probe-OpenClaw {
-    $ref = Get-JsonStr (Read-Text "$HOME\.openclaw\openclaw.json") 'primary'
+    $cfg = Read-Text "$HOME\.openclaw\openclaw.json"
+    $ref = Get-JsonStr $cfg 'primary'
+    # model 객체의 primary 가 없으면 문자열형 model 을 사용함.
+    if (-not $ref) { $ref = Get-JsonStr $cfg 'model' }
     if ($ref) { return (Get-ProviderOf $ref) }
     return 'unknown'
 }
