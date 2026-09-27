@@ -15,6 +15,7 @@ TARGETS=(
   "commandcode|commandcode|$HOME/.commandcode|probe_commandcode"
   "copilot CLI|copilot|$HOME/.copilot|probe_copilot"
   "opencode|opencode|$HOME/.config/opencode|probe_opencode"
+  "kilo|kilo|$HOME/.config/kilo|probe_kilo"
   "omp|omp|$HOME/.omp|probe_omp"
   "pi|pi|$HOME/.pi|probe_pi"
   "antigravity|agy antigravity gemini|$HOME/.gemini|probe_antigravity"
@@ -97,6 +98,20 @@ probe_opencode() {
   done
   # 설정에 model 이 없으면 최근 사용 모델(state/model.json)의 providerID 사용
   local state="${XDG_STATE_HOME:-$HOME/.local/state}/opencode/model.json"
+  local pid
+  pid="$(json_str "$state" providerID)"
+  if [[ -n "$pid" ]]; then echo "$pid (최근 사용)"; return; fi
+  echo "unknown"
+}
+
+probe_kilo() {
+  local cfg model
+  for cfg in "$HOME/.config/kilo/kilo.jsonc" "$HOME/.config/kilo/kilo.json"; do
+    model="$(json_str "$cfg" model)"
+    [[ "$model" == ?*/?* ]] && { provider_of "$model"; echo; return; }
+  done
+  # 설정에 프로바이더가 없으면 저장된 모델의 providerID 사용함.
+  local state="${XDG_STATE_HOME:-$HOME/.local/state}/kilo/model.json"
   local pid
   pid="$(json_str "$state" providerID)"
   if [[ -n "$pid" ]]; then echo "$pid (최근 사용)"; return; fi

@@ -18,6 +18,7 @@ $Targets = @(
     @{ Name = 'commandcode'; Bins = @('commandcode');                  Root = "$HOME\.commandcode";     Probe = 'Probe-CommandCode' }
     @{ Name = 'copilot CLI'; Bins = @('copilot');                      Root = "$HOME\.copilot";         Probe = 'Probe-Copilot' }
     @{ Name = 'opencode';    Bins = @('opencode');                     Root = "$HOME\.config\opencode"; Probe = 'Probe-OpenCode' }
+    @{ Name = 'kilo';        Bins = @('kilo');                         Root = "$HOME\.config\kilo";     Probe = 'Probe-Kilo' }
     @{ Name = 'omp';         Bins = @('omp');                          Root = "$HOME\.omp";             Probe = 'Probe-Omp' }
     @{ Name = 'pi';          Bins = @('pi');                           Root = "$HOME\.pi";              Probe = 'Probe-Pi' }
     @{ Name = 'antigravity'; Bins = @('agy', 'antigravity', 'gemini'); Root = "$HOME\.gemini";          Probe = 'Probe-Antigravity' }
@@ -120,6 +121,18 @@ function Probe-OpenCode {
         $pid_ = Get-JsonStr (Read-Text $f) 'providerID'
         if ($pid_) { return "$pid_ (최근 사용)" }
     }
+    return 'unknown'
+}
+
+function Probe-Kilo {
+    foreach ($f in @("$HOME\.config\kilo\kilo.jsonc", "$HOME\.config\kilo\kilo.json")) {
+        $model = Get-JsonStr (Read-Text $f) 'model'
+        if ($model -match '^.+/.+$') { return (Get-ProviderOf $model) }
+    }
+    # 설정에 프로바이더가 없으면 저장된 모델의 providerID 사용함.
+    $stateHome = if ($env:XDG_STATE_HOME) { $env:XDG_STATE_HOME } else { "$HOME\.local\state" }
+    $pid_ = Get-JsonStr (Read-Text "$stateHome\kilo\model.json") 'providerID'
+    if ($pid_) { return "$pid_ (최근 사용)" }
     return 'unknown'
 }
 
