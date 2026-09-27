@@ -95,8 +95,12 @@ function Probe-Codex {
 
 function Probe-CommandCode {
     $cfg = Read-Text "$HOME\.commandcode\config.json"
-    $mp = Get-JsonStr $cfg 'modelProvider'
-    if (-not $mp) { $mp = Get-ProviderOf (Get-JsonStr $cfg 'model') }
+    $mp = Get-JsonStr $cfg 'provider'
+    if (-not $mp) { $mp = Get-JsonStr $cfg 'modelProvider' }
+    if (-not $mp) {
+        $model = Get-JsonStr $cfg 'model'
+        if ($model -match '^.+/.+$') { $mp = Get-ProviderOf $model }
+    }
     if ($mp) { return $mp }
     return 'unknown'
 }
@@ -128,9 +132,10 @@ function Probe-Omp {
 function Probe-Pi {
     $p = Get-JsonStr (Read-Text "$HOME\.pi\agent\settings.json") 'defaultProvider'
     if ($p) { return $p }
-    # 기본 프로바이더 미지정 시 인증된 프로바이더 목록으로 대신함
+    # 단일 인증은 자동 선택 후보로 추정하며 복수 인증은 확정하지 않음
     $keys = Get-JsonObjKeys (Read-Text "$HOME\.pi\agent\auth.json")
-    if ($keys) { return "미지정 (인증됨: $keys)" }
+    if ($keys -like '*,*') { return "자동 선택 (인증 후보: $keys)" }
+    if ($keys) { return "$keys (인증 기반 추정)" }
     return 'unknown'
 }
 

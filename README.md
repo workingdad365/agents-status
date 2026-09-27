@@ -57,11 +57,11 @@ powershell -ExecutionPolicy Bypass -File .\agents_status.ps1
 |---|---|---|---|
 | claude | `claude` | `~/.claude` | 환경변수 또는 `settings.json` 의 `CLAUDE_CODE_USE_BEDROCK` / `VERTEX` / `FOUNDRY`, `ANTHROPIC_BASE_URL`. 없으면 `anthropic` |
 | codex cli | `codex` | `~/.codex` | `config.toml` 의 `model_provider`. 없으면 `auth.json` 의 `auth_mode` (ChatGPT 로그인 / API key) |
-| commandcode | `commandcode` | `~/.commandcode` | `config.json` 의 `modelProvider`. 없으면 `model` 의 접두어 |
+| commandcode | `commandcode` | `~/.commandcode` | `config.json` 의 `provider`, `modelProvider` 순으로 확인함. 둘 다 없으면 `provider/model` 형태의 접두어 사용. 모델명만 있으면 `unknown` |
 | copilot CLI | `copilot` | `~/.copilot` | 고정 `github-copilot` |
 | opencode | `opencode` | `~/.config/opencode` | `opencode.jsonc` 의 `model` 접두어. 없으면 `~/.local/state/opencode/model.json` 의 최근 사용 프로바이더 |
 | omp | `omp` | `~/.omp` | `agent/config.yml` 의 `modelRoles.default` 접두어 |
-| pi | `pi` | `~/.pi` | `agent/settings.json` 의 `defaultProvider`. 없으면 `agent/auth.json` 의 인증된 프로바이더 목록 |
+| pi | `pi` | `~/.pi` | `agent/settings.json` 의 `defaultProvider`. 없으면 `agent/auth.json` 의 단일 프로바이더를 `인증 기반 추정`으로 표시하며, 복수 인증은 `자동 선택 (인증 후보: ...)`로 표시함 |
 | antigravity | `agy`, `antigravity`, `gemini` | `~/.gemini` | 고정 `google` |
 | crush | `crush` | `~/.config/crush` | `~/.local/share/crush/crush.json` (Windows 는 `%LOCALAPPDATA%\crush\crush.json`) 의 `models.large.provider` |
 | hermes | `hermes` | `~/.hermes` | `config.yaml` 의 `model.provider` |
@@ -77,5 +77,14 @@ Windows 에서는 `~` 가 `C:\Users\<사용자>` 로 풀림.
 ## 주의 사항
 
 - JSON / YAML 을 정규식으로 단순 검색하므로 도구의 설정 파일 구조가 크게 바뀌면 `unknown` 이 출력될 수 있음.
+- Pi의 인증 기반 추정은 저장된 인증 목록 기준이며 인증 유효성을 검사하지 않음. 실행 옵션, 환경변수, 프로젝트 설정, 복원한 세션 등에 따른 실제 선택은 다를 수 있음.
 - 설정 파일에 인증 토큰이 포함된 경우가 있으나 스크립트는 프로바이더 이름만 출력하고 토큰은 출력하지 않음.
 - `agents_status.ps1` 은 UTF-8 BOM 으로 저장되어 있음. PowerShell 5.1 이 한글 스크립트를 올바르게 읽기 위한 것이므로 BOM 을 제거하지 않아야 함.
+
+## 회귀 테스트
+
+```bash
+python3 -B -m unittest -v test_agents_status
+```
+
+임시 HOME에서 Bash 스크립트를 실행하여 Commandcode의 프로바이더 우선순위·모델명 구분과 Pi의 명시 설정·단일 인증·복수 인증·인증 없음 분기를 검증함. PowerShell 실행 검증은 포함하지 않음.

@@ -75,9 +75,13 @@ probe_codex() {
 
 probe_commandcode() {
   local cfg="$HOME/.commandcode/config.json"
-  local mp
-  mp="$(json_str "$cfg" modelProvider)"
-  [[ -z "$mp" ]] && mp="$(provider_of "$(json_str "$cfg" model)")"
+  local mp model
+  mp="$(json_str "$cfg" provider)"
+  [[ -z "$mp" ]] && mp="$(json_str "$cfg" modelProvider)"
+  if [[ -z "$mp" ]]; then
+    model="$(json_str "$cfg" model)"
+    [[ "$model" == ?*/?* ]] && mp="$(provider_of "$model")"
+  fi
   echo "${mp:-unknown}"
 }
 
@@ -112,10 +116,14 @@ probe_pi() {
   local p
   p="$(json_str "$cfg" defaultProvider)"
   if [[ -n "$p" ]]; then echo "$p"; return; fi
-  # 기본 프로바이더 미지정 시 인증된 프로바이더 목록으로 대신함
+  # 단일 인증은 자동 선택 후보로 추정하며 복수 인증은 확정하지 않음
   local keys
   keys="$(json_obj_keys "$auth")"
-  [[ -n "$keys" ]] && echo "미지정 (인증됨: $keys)" || echo "unknown"
+  case "$keys" in
+    "") echo "unknown" ;;
+    *,*) echo "자동 선택 (인증 후보: $keys)" ;;
+    *) echo "$keys (인증 기반 추정)" ;;
+  esac
 }
 
 probe_antigravity() {
