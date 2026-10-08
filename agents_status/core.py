@@ -233,7 +233,7 @@ def _version(executable: Path, args: Sequence[str]) -> str:
     try:
         result = subprocess.run(
             [str(executable), *args], capture_output=True, text=True,
-            stdin=subprocess.DEVNULL, timeout=5, check=False,
+            stdin=subprocess.DEVNULL, timeout=60, check=False,
             env={**os.environ, "NO_COLOR": "1"},
         )
     except (OSError, subprocess.TimeoutExpired):
