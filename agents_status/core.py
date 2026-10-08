@@ -233,8 +233,9 @@ def _version(executable: Path, args: Sequence[str]) -> str:
     try:
         result = subprocess.run(
             [str(executable), *args], capture_output=True, text=True,
+            encoding="utf-8", errors="replace",
             stdin=subprocess.DEVNULL, timeout=60, check=False,
-            env={**os.environ, "NO_COLOR": "1"},
+            env={**os.environ, "NO_COLOR": "1", "PYTHONIOENCODING": "utf-8"},
         )
     except (OSError, subprocess.TimeoutExpired):
         return "조회 실패"
@@ -448,7 +449,7 @@ async def run_update(
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
             stdin=asyncio.subprocess.DEVNULL,
-            env={**os.environ, "NO_COLOR": "1"},
+            env={**os.environ, "NO_COLOR": "1", "PYTHONIOENCODING": "utf-8"},
         )
 
         async def consume_output() -> str:

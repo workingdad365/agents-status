@@ -1,6 +1,8 @@
 import asyncio
 import json
 from pathlib import Path
+import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -16,6 +18,37 @@ from agents_status.core import (
 
 
 SPECS = {spec.key: spec for spec in AGENTS}
+
+
+class LauncherTests(unittest.TestCase):
+    def test_powershell_forwards_project_arguments_and_exit_code(self):
+        shells = [shell for name in ("powershell", "pwsh") if (shell := shutil.which(name))]
+        if not shells:
+            self.skipTest("PowerShell이 설치되지 않음")
+        with tempfile.TemporaryDirectory(prefix="agents status ") as directory:
+            root = Path(directory)
+            launcher = root / "agents_status.ps1"
+            shutil.copyfile(Path(__file__).with_name("agents_status.ps1"), launcher)
+            bootstrap = root / "check.ps1"
+            bootstrap.write_text(
+                "function uv {\n"
+                "    ConvertTo-Json -Compress -InputObject @($args)\n"
+                "    $global:LASTEXITCODE = 7\n"
+                "}\n"
+                "& (Join-Path $PSScriptRoot 'agents_status.ps1') '--example' 'value with spaces'\n"
+                "exit $LASTEXITCODE\n",
+                encoding="utf-8",
+            )
+            for shell in shells:
+                with self.subTest(shell=shell):
+                    result = subprocess.run(
+                        [shell, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(bootstrap)],
+                        cwd=root.parent, capture_output=True, text=True, timeout=30,
+                    )
+                    self.assertEqual(result.returncode, 7, result.stderr)
+                    self.assertEqual(json.loads(result.stdout), [
+                        "run", "--project", str(root), "agents-status", "--example", "value with spaces",
+                    ])
 
 
 class ProviderTests(unittest.TestCase):
@@ -96,7 +129,7 @@ class UpdateTests(unittest.TestCase):
     def test_self_update_uses_discovered_executable(self):
         status = AgentStatus(SPECS["opencode"], StatusKind.INSTALLED, Path("/opt/bin/opencode"), "1.0", "openai")
         command, reason = update_command(status)
-        self.assertEqual(command.argv, ("/opt/bin/opencode", "upgrade"))
+        self.assertEqual(command.argv, (str(status.executable), "upgrade"))
         self.assertEqual(reason, "")
 
     def test_missing_agent_cannot_update(self):

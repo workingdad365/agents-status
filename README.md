@@ -6,14 +6,28 @@
 
 - Python 3.13.x
 - [uv](https://docs.astral.sh/uv/)
-- Linux, WSL2 또는 macOS
+- Windows PowerShell 5.1 이상, Linux, WSL2 또는 macOS
 
 Python 버전은 `.python-version`에 `3.13`으로 지정되어 있으며, 의존성은 `uv.lock`으로 고정됩니다.
 
 ## 실행
 
+Linux / WSL2 / macOS:
+
 ```bash
 ./agents_status.sh
+```
+
+Windows PowerShell:
+
+```powershell
+.\agents_status.ps1
+```
+
+스크립트 실행 정책으로 차단되는 경우 다음 명령으로 실행함.
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\agents_status.ps1
 ```
 
 또는 직접 실행할 수 있습니다.
@@ -89,7 +103,7 @@ uv run python -m unittest -v
 | `agents_status/app.py` | Textual 화면과 사용자 동작 |
 | `agents_status/core.py` | 상태·버전 조사와 업데이트 실행 |
 | `agents_status.sh` | uv 기반 실행 진입점 |
-| `agents_status.ps1` | 기존 Windows PowerShell 조회 전용 스크립트 |
+| `agents_status.ps1` | Windows PowerShell용 uv 기반 실행 진입점 |
 | `test_agents_status.py` | 회귀 테스트 |
 
-PowerShell 스크립트는 기존 조회 전용 구현으로 유지됩니다. 새 TUI와 개별 업데이트 기능은 현재 `agents_status.sh` 또는 `uv run agents-status` 실행 경로에서 제공됩니다.
+두 스크립트 모두 스크립트 위치의 프로젝트를 기준으로 동일한 Python TUI를 실행하며, 전달받은 인자와 종료 코드를 유지함.
