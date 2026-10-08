@@ -1,90 +1,88 @@
 # agents-status
 
-여러 AI 코딩 도구의 설치 여부와 현재 설정된 LLM 프로바이더를 한 번에 조사하여 출력함. 설정을 변경하지 않으며 조사 결과만 보여줌.
+여러 AI 코딩 에이전트의 설치 상태, 현재 버전, LLM 프로바이더를 한 화면에서 확인하고 개별 업데이트하는 Textual TUI입니다.
 
-대상 도구 목록은 [sync-instructions](../sync-instructions) 와 동일함.
+## 요구 사항
 
-## 구성
+- Python 3.13.x
+- [uv](https://docs.astral.sh/uv/)
+- Linux, WSL2 또는 macOS
 
-| 파일 | 설명 |
-|---|---|
-| `agents_status.sh` | Linux / WSL2 / macOS 용 조사 스크립트 (bash) |
-| `agents_status.ps1` | Windows PowerShell 5.1 / PowerShell 7 용 조사 스크립트 |
+Python 버전은 `.python-version`에 `3.13`으로 지정되어 있으며, 의존성은 `uv.lock`으로 고정됩니다.
 
-두 스크립트는 동일한 대상과 동일한 규칙으로 동작함.
-
-## 사용법
-
-**Linux / WSL2 / macOS**
+## 실행
 
 ```bash
 ./agents_status.sh
 ```
 
-**Windows PowerShell**
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\agents_status.ps1
-```
-
-`-ExecutionPolicy Bypass` 는 이번 프로세스에서만 스크립트 실행 정책 검사를 건너뜀. 시스템 설정은 바뀌지 않음.
-
-실행 결과 예시:
-
-```
-[ok]    claude: /home/user/.local/bin/claude | provider: anthropic
-[ok]    codex cli: /home/user/.nvm/versions/node/v26.10.0/bin/codex | provider: openai (ChatGPT 로그인)
-[cfg]   commandcode: 실행파일 없음, 설정 디렉토리만 남음 (/home/user/.commandcode) | provider: openrouter
-[none]  omp: 미설치
-...
-
-합계: 설치 8개, 설정만 남음 1개, 미설치 2개
-```
-
-## 상태 분류
-
-| 표시 | 조건 |
-|---|---|
-| `[ok]` | 실행파일이 PATH 에 있음. 경로와 프로바이더를 출력함 |
-| `[cfg]` | 실행파일은 없고 설정 디렉토리만 남아 있음. 설정 파일에서 읽을 수 있으면 프로바이더도 출력함 |
-| `[none]` | 실행파일도 설정 디렉토리도 없음 |
-
-## 대상 도구와 프로바이더 조사 방식
-
-모델 이름은 출력하지 않고 프로바이더만 출력함. 설정 파일은 정규식 단순 검색으로 읽음.
-
-| 도구 | 실행파일 | 최상위 디렉토리 | 프로바이더 조사 소스 |
-|---|---|---|---|
-| claude | `claude` | `~/.claude` | 환경변수 또는 `settings.json` 의 `CLAUDE_CODE_USE_BEDROCK` / `VERTEX` / `FOUNDRY`, `ANTHROPIC_BASE_URL`. 없으면 `anthropic` |
-| codex cli | `codex` | `~/.codex` | `config.toml` 의 `model_provider`. 없으면 `auth.json` 의 `auth_mode` (ChatGPT 로그인 / API key) |
-| commandcode | `commandcode` | `~/.commandcode` | `config.json` 의 `provider`, `modelProvider` 순으로 확인함. 둘 다 없으면 `provider/model` 형태의 접두어 사용. 모델명만 있으면 `unknown` |
-| copilot CLI | `copilot` | `~/.copilot` | 고정 `github-copilot` |
-| opencode | `opencode` | `~/.config/opencode` | `opencode.jsonc` 의 `model` 접두어. 없으면 `~/.local/state/opencode/model.json` 의 최근 사용 프로바이더 |
-| omp | `omp` | `~/.omp` | `agent/config.yml` 의 `modelRoles.default` 접두어 |
-| pi | `pi` | `~/.pi` | `agent/settings.json` 의 `defaultProvider`. 없으면 `agent/auth.json` 의 단일 프로바이더를 `인증 기반 추정`으로 표시하며, 복수 인증은 `자동 선택 (인증 후보: ...)`로 표시함 |
-| antigravity | `agy`, `antigravity`, `gemini` | `~/.gemini` | 고정 `google` |
-| crush | `crush` | `~/.config/crush` | `~/.local/share/crush/crush.json` (Windows 는 `%LOCALAPPDATA%\crush\crush.json`) 의 `models.large.provider` |
-| hermes | `hermes` | `~/.hermes` | `config.yaml` 의 `model.provider` |
-| openclaw | `openclaw` | `~/.openclaw` | `openclaw.json` 의 `agents.defaults.model.primary` 접두어. 없으면 문자열형 `agents.defaults.model` 의 접두어 |
-
-Windows 에서는 `~` 가 `C:\Users\<사용자>` 로 풀림.
-
-### 대상 추가
-
-- `agents_status.sh`: `TARGETS` 배열에 `"도구이름|실행파일후보(공백 구분)|최상위디렉토리|조사함수명"` 형식으로 추가하고 `probe_<이름>` 함수를 작성함.
-- `agents_status.ps1`: `$Targets` 배열에 `@{ Name; Bins; Root; Probe }` 해시테이블로 추가하고 `Probe-<이름>` 함수를 작성함.
-
-## 주의 사항
-
-- JSON / YAML 을 정규식으로 단순 검색하므로 도구의 설정 파일 구조가 크게 바뀌면 `unknown` 이 출력될 수 있음.
-- Pi의 인증 기반 추정은 저장된 인증 목록 기준이며 인증 유효성을 검사하지 않음. 실행 옵션, 환경변수, 프로젝트 설정, 복원한 세션 등에 따른 실제 선택은 다를 수 있음.
-- 설정 파일에 인증 토큰이 포함된 경우가 있으나 스크립트는 프로바이더 이름만 출력하고 토큰은 출력하지 않음.
-- `agents_status.ps1` 은 UTF-8 BOM 으로 저장되어 있음. PowerShell 5.1 이 한글 스크립트를 올바르게 읽기 위한 것이므로 BOM 을 제거하지 않아야 함.
-
-## 회귀 테스트
+또는 직접 실행할 수 있습니다.
 
 ```bash
-python3 -B -m unittest -v test_agents_status
+uv run agents-status
 ```
 
-임시 HOME에서 Bash 스크립트를 실행하여 Commandcode의 프로바이더 우선순위·모델명 구분과 Pi의 명시 설정·단일 인증·복수 인증·인증 없음 분기를 검증함. PowerShell 실행 검증은 포함하지 않음.
+첫 실행 시 uv가 Python 환경을 만들고 Textual을 설치합니다.
+
+## 조작
+
+| 키/버튼 | 기능 |
+|---|---|
+| `↑` / `↓` | 에이전트 선택 |
+| `U` | 선택한 에이전트 업데이트 |
+| `R` | 설치 상태와 버전 새로고침 |
+| `Q` | 종료 |
+
+업데이트 전에는 실제 실행할 명령을 확인하는 창이 표시됩니다. 업데이트 결과와 오류는 하단 로그에서 확인할 수 있습니다.
+
+## 표시 정보
+
+| 열 | 설명 |
+|---|---|
+| 상태 | `설치됨`, `설정만`, `미설치`로 구분 |
+| 에이전트 | 도구 이름 |
+| 버전 | 설치된 실행 파일의 `--version` 결과 |
+| 프로바이더 | 설정에서 확인한 현재 LLM 프로바이더 |
+| 실행 파일 | PATH에서 발견한 실제 실행 파일 경로 |
+
+버전 조회는 각 에이전트에 대해 병렬로 실행되며, 응답하지 않는 명령은 5초 후 `조회 실패`로 표시됩니다.
+
+## 지원 에이전트
+
+| 도구 | 프로바이더 조사 소스 | 개별 업데이트 |
+|---|---|---|
+| Claude | `~/.claude/settings.json`, 환경 변수 | `claude update` |
+| Codex CLI | `~/.codex/config.toml`, `auth.json` | npm/Homebrew 설치를 판별한 경우 |
+| Command Code | `~/.commandcode/config.json` | `<실행 파일> update` |
+| Copilot CLI | GitHub Copilot 고정 | `copilot update` |
+| OpenCode | 설정 모델 또는 최근 사용 모델 | `opencode upgrade` |
+| Kilo | 설정 모델 또는 최근 사용 모델 | `kilo upgrade` |
+| OMP | `~/.omp/agent/config.yml` | `omp update` |
+| Pi | 설정 또는 인증 프로바이더 | `pi update --self` |
+| Antigravity | Google 고정 | `agy update`, 그 외 npm/Bun/Homebrew 설치 판별 |
+| Crush | `~/.local/share/crush/crush.json` | npm/Bun/Homebrew 설치 판별 |
+| Hermes | `~/.hermes/config.yaml` | `hermes update --yes` |
+| OpenClaw | `~/.openclaw/openclaw.json` | `openclaw update --yes` |
+
+자체 업데이트 명령이 없는 Codex는 실행 파일의 실제 경로에서 npm 또는 Homebrew 설치임이 확인된 경우에만 업데이트한다. Crush와 Gemini CLI(`gemini`로 감지된 경우)는 심볼릭 링크의 실제 경로와 패키지 정보를 이용해 npm/Bun/Homebrew 설치를 판별한다. npm은 원래 설치된 prefix의 npm을 사용하고 동일한 prefix에 업데이트한다. Homebrew는 실제 Cellar/Caskroom 경로의 패키지명을 사용한다. 설치 방식을 판별할 수 없거나 해당 설치의 패키지 관리자가 없으면 경로와 사유를 안내한다.
+
+## 개발 및 테스트
+
+```bash
+uv sync
+uv run python -m unittest -v
+```
+
+테스트는 임시 홈 디렉터리에서 프로바이더 판별 규칙과 업데이트 명령 선택을 검증합니다.
+
+## 프로젝트 구성
+
+| 경로 | 설명 |
+|---|---|
+| `agents_status/app.py` | Textual 화면과 사용자 동작 |
+| `agents_status/core.py` | 상태·버전 조사와 업데이트 실행 |
+| `agents_status.sh` | uv 기반 실행 진입점 |
+| `agents_status.ps1` | 기존 Windows PowerShell 조회 전용 스크립트 |
+| `test_agents_status.py` | 회귀 테스트 |
+
+PowerShell 스크립트는 기존 조회 전용 구현으로 유지됩니다. 새 TUI와 개별 업데이트 기능은 현재 `agents_status.sh` 또는 `uv run agents-status` 실행 경로에서 제공됩니다.
