@@ -54,6 +54,18 @@ class CommandResult:
     output: str
 
 
+@dataclass(frozen=True, slots=True)
+class UninstallPlan:
+    command: UpdateCommand | None = None
+    paths: tuple[Path, ...] = ()
+
+    @property
+    def display(self) -> str:
+        if self.command:
+            return self.command.display
+        return "삭제: " + ", ".join(map(str, self.paths)) if self.paths else "설치된 프로그램 없음"
+
+
 def _read(path: Path) -> str:
     try:
         return path.read_text(encoding="utf-8")
@@ -258,7 +270,7 @@ async def scan_agents(specs: Sequence[AgentSpec] = AGENTS) -> list[AgentStatus]:
     return list(await asyncio.gather(*(asyncio.to_thread(scan_agent, spec) for spec in specs)))
 
 
-def _package_update(executable: Path, packages: tuple[str, ...]) -> UpdateCommand | None:
+def _package_update(executable: Path, packages: tuple[str, ...], *, uninstall: bool = False) -> UpdateCommand | None:
     resolved = executable.resolve()
     for root in resolved.parents:
         if root.parent.name not in ("node_modules", *{p.split("/")[0] for p in packages if p.startswith("@")}):
@@ -274,12 +286,12 @@ def _package_update(executable: Path, packages: tuple[str, ...]) -> UpdateComman
             prefix = modules.parent.parent
             npm = prefix / "bin/npm"
             if npm.is_file():
-                argv = (str(npm), "install", "--global", "--prefix", str(prefix), f"{package}@latest")
+                argv = (str(npm), "uninstall" if uninstall else "install", "--global", "--prefix", str(prefix), package if uninstall else f"{package}@latest")
                 return UpdateCommand(argv, " ".join(argv))
         if modules.parent.name == "global" and modules.parent.parent.name == "install":
             bun = modules.parent.parent.parent / "bin/bun"
             if bun.is_file():
-                argv = (str(bun), "add", "--global", f"{package}@latest")
+                argv = (str(bun), "remove" if uninstall else "add", "--global", package if uninstall else f"{package}@latest")
                 return UpdateCommand(argv, " ".join(argv))
     for directory, flag in (("Cellar", "--formula"), ("Caskroom", "--cask")):
         if directory in resolved.parts:
@@ -288,9 +300,106 @@ def _package_update(executable: Path, packages: tuple[str, ...]) -> UpdateComman
             brew = prefix / "bin/brew"
             if brew.is_file() and len(resolved.parts) > index + 1:
                 package = resolved.parts[index + 1]
-                argv = (str(brew), "upgrade", flag, package)
+                argv = (str(brew), "uninstall" if uninstall else "upgrade", flag, package)
                 return UpdateCommand(argv, " ".join(argv))
     return None
+
+
+PACKAGES = {
+    "claude": "@anthropic-ai/claude-code",
+    "codex": "@openai/codex",
+    "commandcode": "command-code",
+    "copilot": "@github/copilot",
+    "opencode": "opencode-ai",
+    "kilo": "@kilocode/cli",
+    "omp": "@oh-my-pi/pi-coding-agent",
+    "pi": "@mariozechner/pi-coding-agent",
+    "antigravity": "@google/gemini-cli",
+    "crush": "@charmland/crush",
+    "openclaw": "openclaw",
+}
+
+
+def install_command(status: AgentStatus) -> tuple[UpdateCommand | None, str]:
+    if status.spec.key == "hermes":
+        if not shutil.which("curl") or not (bash := shutil.which("bash")):
+            return None, "Hermes 설치에는 curl과 bash가 필요합니다."
+        script = "curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash -s -- --non-interactive"
+        return UpdateCommand((bash, "-o", "pipefail", "-c", script), script), ""
+    package = PACKAGES.get(status.spec.key)
+    if package and (npm := shutil.which("npm")):
+        argv = (npm, "install", "--global", f"{package}@latest")
+        return UpdateCommand(argv, " ".join(argv)), ""
+    if package:
+        return None, "설치하려면 npm이 필요합니다."
+    return None, f"{status.spec.name} 자동 설치를 지원하지 않습니다."
+
+
+def config_paths(spec: AgentSpec, *, home: Path | None = None) -> tuple[Path, ...]:
+    base = Path.home() if home is None else home
+    paths = [base / spec.config_root]
+    if spec.key == "claude":
+        paths.append(base / ".claude.json")
+    if spec.key in ("opencode", "kilo", "crush"):
+        for variable, default in (("XDG_DATA_HOME", ".local/share"), ("XDG_STATE_HOME", ".local/state"), ("XDG_CACHE_HOME", ".cache")):
+            paths.append(Path(os.environ.get(variable, str(base / default))) / spec.key)
+    return tuple(paths)
+
+
+def uninstall_plan(status: AgentStatus, *, home: Path | None = None) -> tuple[UninstallPlan | None, str]:
+    if not status.executable:
+        return UninstallPlan(), ""
+    executable = status.executable
+    package = PACKAGES.get(status.spec.key)
+    command = _package_update(executable, (package,) if package else (), uninstall=True)
+    if command:
+        return UninstallPlan(command), ""
+    base = Path.home() if home is None else home
+    resolved = executable.resolve()
+    if status.spec.key == "claude" and resolved.is_relative_to(base / ".local/share/claude"):
+        return UninstallPlan(paths=(executable, base / ".local/share/claude")), ""
+    if status.spec.key == "opencode" and executable == base / ".opencode/bin/opencode":
+        return UninstallPlan(paths=(executable,)), ""
+    if status.spec.key == "hermes":
+        root = base / ".hermes/hermes-agent"
+        if resolved.is_relative_to(root) and (root / "hermes_cli").is_dir():
+            return UninstallPlan(paths=(executable, root)), ""
+    if executable.parent == base / ".local/bin" and not executable.is_symlink() and "node_modules" not in resolved.parts:
+        # 독립 실행 바이너리만 제거하며 스크립트 기반 설치는 별도 판별이 필요함.
+        try:
+            with executable.open("rb") as stream:
+                magic = stream.read(4)
+            if magic in (b"\x7fELF", b"\xcf\xfa\xed\xfe", b"\xca\xfe\xba\xbe"):
+                return UninstallPlan(paths=(executable,)), ""
+        except OSError:
+            pass
+    return None, f"{status.spec.name} 설치 경로({resolved})에서 지원하는 삭제 방식(npm/Bun/Homebrew/독립 바이너리)을 판별하지 못했습니다."
+
+
+def _remove_paths(paths: Sequence[Path]) -> None:
+    for path in paths:
+        if path.is_symlink():
+            path.unlink()
+        elif path.is_dir():
+            shutil.rmtree(path)
+        else:
+            path.unlink(missing_ok=True)
+
+
+async def run_uninstall(
+    plan: UninstallPlan,
+    settings: Sequence[Path] = (),
+    on_output: Callable[[str], None] | None = None,
+) -> CommandResult:
+    if plan.command:
+        result = await run_update(plan.command, on_output=on_output)
+        if result.returncode:
+            return result
+    try:
+        await asyncio.to_thread(_remove_paths, (*plan.paths, *settings))
+    except OSError as error:
+        return CommandResult(1, f"삭제 실패: {error}")
+    return CommandResult(0, "삭제를 완료했습니다.")
 
 
 def update_command(status: AgentStatus) -> tuple[UpdateCommand | None, str]:
@@ -368,12 +477,12 @@ async def run_update(
         if process is not None:
             process.kill()
             await process.wait()
-        message = "업데이트 제한 시간(10분)을 초과했습니다."
+        message = f"명령 실행 제한 시간({timeout:g}초)을 초과했습니다."
         if on_output is not None:
             on_output(message)
         return CommandResult(124, message)
     except OSError as error:
-        message = f"업데이트 명령을 실행하지 못했습니다: {error}"
+        message = f"명령을 실행하지 못했습니다: {error}"
         if on_output is not None:
             on_output(message)
         return CommandResult(127, message)

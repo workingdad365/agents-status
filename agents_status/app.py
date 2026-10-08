@@ -8,7 +8,10 @@ from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
 from textual.widgets import Button, DataTable, Footer, Header, Label, LoadingIndicator, RichLog, Static
 
-from .core import AgentStatus, StatusKind, UpdateCommand, scan_agents, run_update, update_command
+from .core import (
+    AgentStatus, StatusKind, UpdateCommand, UninstallPlan, config_paths,
+    install_command, scan_agents, run_uninstall, run_update, uninstall_plan, update_command,
+)
 
 
 class ConfirmUpdate(ModalScreen[bool]):
@@ -19,18 +22,19 @@ class ConfirmUpdate(ModalScreen[bool]):
     ConfirmUpdate Button { margin-left: 1; }
     """
 
-    def __init__(self, name: str, command: str) -> None:
+    def __init__(self, name: str, command: str, operation: str = "업데이트") -> None:
         super().__init__()
         self.agent_name = name
         self.command = command
+        self.operation = operation
 
     def compose(self) -> ComposeResult:
         with Vertical():
-            yield Label(f"[b]{self.agent_name}[/b]을(를) 업데이트하시겠습니까?")
+            yield Label(f"[b]{self.agent_name}[/b]을(를) {self.operation}하시겠습니까?")
             yield Static(f"[dim]$ {self.command}[/dim]")
             with Horizontal():
                 yield Button("취소", id="cancel")
-                yield Button("업데이트", id="confirm", variant="primary")
+                yield Button(self.operation, id="confirm", variant="primary")
 
     @on(Button.Pressed, "#cancel")
     def cancel(self) -> None:
@@ -39,6 +43,46 @@ class ConfirmUpdate(ModalScreen[bool]):
     @on(Button.Pressed, "#confirm")
     def confirm(self) -> None:
         self.dismiss(True)
+
+
+class ConfirmDelete(ModalScreen[bool | None]):
+    DEFAULT_CSS = """
+    ConfirmDelete { align: center middle; background: $background 70%; }
+    ConfirmDelete > Vertical { width: 76; height: auto; max-height: 95%; padding: 1 2; border: round $error; background: $surface; overflow-y: auto; }
+    ConfirmDelete Horizontal { height: auto; align-horizontal: right; margin-top: 1; }
+    ConfirmDelete Button { margin-left: 1; }
+    """
+    BINDINGS = [
+        Binding("y,Y", "answer(True)", "설정 삭제", show=False),
+        Binding("n,N", "answer(False)", "설정 보존", show=False),
+        Binding("escape", "cancel", "취소", show=False),
+    ]
+
+    def __init__(self, status: AgentStatus, plan: UninstallPlan) -> None:
+        super().__init__()
+        self.status = status
+        self.plan = plan
+
+    def compose(self) -> ComposeResult:
+        with Vertical():
+            yield Label(f"[b]{self.status.spec.name}[/b] 삭제 시 설정도 삭제하시겠습니까? (Y/N)")
+            yield Static(self.plan.display, markup=False)
+            yield Static("Y: 아래 설정·인증·사용 기록까지 삭제\n" + "\n".join(map(str, config_paths(self.status.spec))), markup=False)
+            yield Static("N: 설정을 보존하고 프로그램만 삭제")
+            with Horizontal():
+                yield Button("취소", id="cancel-delete")
+                yield Button("N · 설정 보존", id="keep-config", variant="primary")
+                yield Button("Y · 설정 삭제", id="delete-config", variant="error")
+
+    def action_answer(self, delete_config: bool) -> None:
+        self.dismiss(delete_config)
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+    @on(Button.Pressed)
+    def answer_pressed(self, event: Button.Pressed) -> None:
+        self.dismiss({"delete-config": True, "keep-config": False}.get(event.button.id))
 
 
 class AgentsStatusApp(App[None]):
@@ -57,8 +101,8 @@ class AgentsStatusApp(App[None]):
     BINDINGS = [
         ("r", "refresh", "새로고침"),
         Binding("R,ㄱ", "refresh", "새로고침", show=False),
-        ("u", "update", "선택 업데이트"),
-        Binding("U,ㅕ", "update", "선택 업데이트", show=False),
+        ("u", "update", "업데이트"),
+        Binding("U,ㅕ", "update", "업데이트", show=False),
         ("q", "quit", "종료"),
         Binding("Q,ㅂ", "quit", "종료", show=False),
     ]
@@ -74,7 +118,8 @@ class AgentsStatusApp(App[None]):
         yield DataTable(id="agents", cursor_type="row", zebra_stripes=True)
         with Horizontal(id="actions"):
             yield Button("새로고침", id="refresh", variant="default")
-            yield Button("선택 업데이트", id="update", variant="primary")
+            yield Button("업데이트", id="update", variant="primary")
+            yield Button("삭제", id="delete", variant="error")
             yield LoadingIndicator(id="progress")
             yield Label("", id="activity")
         yield RichLog(id="log", highlight=True, markup=True)
@@ -122,14 +167,62 @@ class AgentsStatusApp(App[None]):
 
     def _selected(self) -> AgentStatus | None:
         table = self.query_one(DataTable)
-        if not self.statuses or table.cursor_row < 0:
+        if not self.statuses or not table.row_count or table.cursor_row < 0:
             return None
         key = str(table.coordinate_to_cell_key(table.cursor_coordinate).row_key.value)
         return next((status for status in self.statuses if status.spec.key == key), None)
 
     def _set_buttons(self, disabled: bool) -> None:
         self.query_one("#refresh", Button).disabled = disabled
-        self.query_one("#update", Button).disabled = disabled
+        status = self._selected()
+        operation = "설치" if status and status.status != StatusKind.INSTALLED else "업데이트"
+        button = self.query_one("#update", Button)
+        button.label = operation
+        button.disabled = disabled or status is None
+        self.query_one("#delete", Button).disabled = disabled or status is None or status.status == StatusKind.MISSING
+
+    @on(DataTable.RowHighlighted)
+    def selection_changed(self) -> None:
+        self._set_buttons(self.busy)
+
+    @on(Button.Pressed, "#delete")
+    def delete_pressed(self) -> None:
+        if self.busy:
+            return
+        status = self._selected()
+        if status is None or status.status == StatusKind.MISSING:
+            return
+        plan, reason = uninstall_plan(status)
+        if plan is None:
+            self.notify(reason, title=status.spec.name, severity="warning", timeout=5)
+            return
+        self.push_screen(
+            ConfirmDelete(status, plan),
+            lambda answer: self.delete_agent(status, plan, answer) if answer is not None else None,
+        )
+
+    @work(exclusive=True, group="update")
+    async def delete_agent(self, status: AgentStatus, plan: UninstallPlan, delete_config: bool) -> None:
+        self.busy = True
+        self._set_buttons(True)
+        log = self.query_one("#log", RichLog)
+        log.write(Text(f"{status.spec.name} 삭제: {plan.display}"))
+        self.query_one("#progress", LoadingIndicator).styles.display = "block"
+        self.query_one("#activity", Label).update(f"{status.spec.name} 삭제 진행 중…")
+        try:
+            result = await run_uninstall(
+                plan, config_paths(status.spec) if delete_config else (),
+                on_output=lambda line: log.write(Text.from_ansi(line)),
+            )
+            log.write(Text(result.output))
+            self.notify("삭제를 완료했습니다." if result.returncode == 0 else "삭제에 실패했습니다. 로그를 확인해 주세요.",
+                        title=status.spec.name, severity="information" if result.returncode == 0 else "error")
+        finally:
+            self.query_one("#progress", LoadingIndicator).styles.display = "none"
+            self.query_one("#activity", Label).update("")
+            self.busy = False
+            self._set_buttons(False)
+            self.load_statuses()
 
     @on(Button.Pressed, "#refresh")
     def refresh_pressed(self) -> None:
@@ -151,12 +244,16 @@ class AgentsStatusApp(App[None]):
         if status is None:
             self.notify("에이전트를 선택해 주세요.", severity="warning")
             return
-        command, reason = update_command(status)
+        operation = "업데이트" if status.status == StatusKind.INSTALLED else "설치"
+        command, reason = update_command(status) if operation == "업데이트" else install_command(status)
         if command is None:
             self.notify(reason, title=status.spec.name, severity="warning", timeout=5)
             return
+        if operation == "설치":
+            self.update_agent(status, command)
+            return
         self.push_screen(
-            ConfirmUpdate(status.spec.name, command.display),
+            ConfirmUpdate(status.spec.name, command.display, operation),
             lambda confirmed: self.update_agent(status, command) if confirmed else None,
         )
 
@@ -165,21 +262,22 @@ class AgentsStatusApp(App[None]):
         self.busy = True
         self._set_buttons(True)
         log = self.query_one("#log", RichLog)
-        log.write(f"[bold]{status.spec.name} 업데이트[/bold]: $ {command.display}")
-        log.write("[yellow]업데이트를 시작했습니다. 완료될 때까지 기다려 주세요.[/yellow]")
+        operation = "업데이트" if status.status == StatusKind.INSTALLED else "설치"
+        log.write(f"[bold]{status.spec.name} {operation}[/bold]: $ {command.display}")
+        log.write(f"[yellow]{operation}를 시작했습니다. 완료될 때까지 기다려 주세요.[/yellow]")
         self.query_one("#progress", LoadingIndicator).styles.display = "block"
-        self.query_one("#activity", Label).update(f"{status.spec.name} 업데이트 진행 중…")
+        self.query_one("#activity", Label).update(f"{status.spec.name} {operation} 진행 중…")
         try:
             result = await run_update(
                 command,
                 on_output=lambda line: log.write(Text.from_ansi(line)),
             )
             if result.returncode == 0:
-                self.notify("업데이트를 완료했습니다.", title=status.spec.name)
-                log.write("[green]업데이트를 완료했습니다.[/green]")
+                self.notify(f"{operation}를 완료했습니다.", title=status.spec.name)
+                log.write(f"[green]{operation}를 완료했습니다.[/green]")
             else:
-                self.notify(f"업데이트 실패(종료 코드 {result.returncode})", title=status.spec.name, severity="error")
-                log.write(f"[red]업데이트 실패(종료 코드 {result.returncode})[/red]")
+                self.notify(f"{operation} 실패(종료 코드 {result.returncode})", title=status.spec.name, severity="error")
+                log.write(f"[red]{operation} 실패(종료 코드 {result.returncode})[/red]")
         finally:
             self.query_one("#progress", LoadingIndicator).styles.display = "none"
             self.query_one("#activity", Label).update("")
