@@ -227,6 +227,20 @@ def _hermes(home: Path, env: Mapping[str, str]) -> str:
     return _yaml_child(_hermes_home(home, env) / "config.yaml", "model", "provider") or "unknown"
 
 
+def _omp_install_dir(home: Path, env: Mapping[str, str] | None = None) -> Path:
+    """OMP 공식 설치 스크립트가 단일 바이너리를 두는 디렉터리.
+
+    PI_INSTALL_DIR이 우선하며, 없으면 Windows는 %LOCALAPPDATA%\\omp, 그 외는 ~/.local/bin임.
+    """
+    environment = os.environ if env is None else env
+    custom = environment.get("PI_INSTALL_DIR", "").strip()
+    if custom:
+        return Path(custom)
+    if sys.platform == "win32":
+        return Path(environment.get("LOCALAPPDATA", str(home / "AppData/Local"))) / "omp"
+    return home / ".local/bin"
+
+
 def _openclaw(home: Path, env: Mapping[str, str]) -> str:
     del env
     config = home / ".openclaw/openclaw.json"
@@ -345,14 +359,18 @@ def scan_agent(
             break
     executable = Path(found) if found else None
     config_root = _config_root(spec, base, environment)
-    if executable is None and spec.key == "hermes" and sys.platform == "win32":
+    if executable is None and sys.platform == "win32":
         # 설치 자식 프로세스가 등록한 PATH는 부모 터미널을 통해 재실행해도 오래된 값일 수 있음.
-        # 최신 설치의 bin 런처와 구버전 venv 진입점을 직접 확인함.
-        candidates = (
-            config_root / "bin/hermes.exe",
-            config_root / "bin/hermes.cmd",
-            config_root / "hermes-agent/venv/Scripts/hermes.exe",
-        )
+        # Hermes는 최신 설치의 bin 런처와 구버전 venv 진입점을, OMP는 공식 설치 위치를 직접 확인함.
+        candidates: tuple[Path, ...] = ()
+        if spec.key == "hermes":
+            candidates = (
+                config_root / "bin/hermes.exe",
+                config_root / "bin/hermes.cmd",
+                config_root / "hermes-agent/venv/Scripts/hermes.exe",
+            )
+        elif spec.key == "omp":
+            candidates = (_omp_install_dir(base, environment) / "omp.exe",)
         executable = next((candidate for candidate in candidates if candidate.is_file()), None)
     provider = spec.provider_probe(base, environment) if executable or config_root.is_dir() else "-"
     if executable:
@@ -571,11 +589,25 @@ def install_command(status: AgentStatus) -> tuple[UpdateCommand | None, str]:
             return None, "Hermes 설치에는 curl과 bash가 필요합니다."
         script = "curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash -s -- --non-interactive"
         return UpdateCommand((bash, "-o", "pipefail", "-c", script), script), ""
+    if status.spec.key == "omp":
+        # npm 패키지는 실행에 Bun이 필요하므로 공식 설치 스크립트의 --binary 모드로 Bun이 필요 없는
+        # 단일 바이너리를 설치함(Windows는 %LOCALAPPDATA%\omp와 사용자 PATH 등록, 그 외는 ~/.local/bin).
+        if sys.platform == "win32":
+            shell = _which("pwsh") or _which("powershell")
+            if not shell:
+                return None, "OMP 설치에는 PowerShell이 필요합니다."
+            script = (
+                "$ErrorActionPreference = 'Stop'; $global:LASTEXITCODE = 0; "
+                "& ([scriptblock]::Create((irm https://omp.sh/install.ps1))) -Binary; "
+                "exit $LASTEXITCODE"
+            )
+            return UpdateCommand((shell, "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script), script), ""
+        if not _which("curl") or not (bash := _which("bash")):
+            return None, "OMP 설치에는 curl과 bash가 필요합니다."
+        script = "curl -fsSL https://omp.sh/install | sh -s -- --binary"
+        return UpdateCommand((bash, "-o", "pipefail", "-c", script), script), ""
     package = PACKAGES.get(status.spec.key)
     if package and (npm := _which("npm")):
-        # Windows의 npm PowerShell 래퍼는 bun.cmd가 아닌 bun.exe를 직접 호출함.
-        if status.spec.key == "omp" and not _which("bun.exe" if sys.platform == "win32" else "bun"):
-            return None, "OMP 설치에는 Bun이 필요합니다. https://bun.com/docs/installation 에 따라 설치하고 Bun 실행 파일 폴더를 PATH에 추가한 뒤 다시 실행하세요."
         # npm 12는 허용되지 않은 postinstall을 건너뛰므로 Claude 바이너리 배치를 명시적으로 허용함.
         scripts = (f"--allow-scripts={package}",) if status.spec.key == "claude" else ()
         argv = (npm, "install", "--global", *scripts, f"{package}@latest")
@@ -651,10 +683,34 @@ def uninstall_plan(status: AgentStatus, *, home: Path | None = None) -> tuple[Un
         return UninstallPlan(paths=tuple(paths)), ""
     if status.spec.key == "opencode" and executable == base / ".opencode/bin/opencode":
         return UninstallPlan(paths=(executable,)), ""
+    if (
+        status.spec.key == "kilo"
+        and executable.parent == base / ".kilo/bin"
+        and executable.stem.lower() == "kilo"
+        and not executable.is_symlink()
+        and "node_modules" not in resolved.parts
+        and _is_native_binary(resolved, _PE_MAGIC + _UNIX_MAGIC)
+    ):
+        # 공식 설치 스크립트는 ~/.kilo/bin에 단일 바이너리와 tree-sitter 문법을 두므로 bin 디렉터리를 삭제함.
+        return UninstallPlan(paths=(executable.parent,)), ""
+    if (
+        status.spec.key == "omp"
+        and executable.stem.lower() == "omp"
+        and not executable.is_symlink()
+        and "node_modules" not in resolved.parts
+        and _is_native_binary(resolved, _PE_MAGIC + _UNIX_MAGIC)
+    ):
+        # 공식 설치 스크립트의 단일 바이너리. Windows 기본 위치 %LOCALAPPDATA%\omp는 전용 디렉터리이므로
+        # 디렉터리째 삭제하고, 그 외(~/.local/bin 등 공용 디렉터리)는 실행 파일만 삭제함.
+        dedicated = Path(os.environ.get("LOCALAPPDATA", str(base / "AppData/Local"))) / "omp"
+        if sys.platform == "win32" and resolved.parent == dedicated:
+            return UninstallPlan(paths=(dedicated,)), ""
+        return UninstallPlan(paths=(executable,)), ""
     if status.spec.key == "hermes":
-        # 공식 설치 스크립트는 <설치 루트>/hermes-agent에 소스와 venv를 둠(기본 루트는 $HERMES_HOME,
-        # root FHS 설치는 /usr/local/lib). Unix는 ~/.local/bin/hermes에 venv 진입점을 exec하는
-        # 셸 shim(구버전은 심볼릭 링크)을 두고, Windows는 bin 런처 또는 venv 진입점을 등록함.
+        # 공식 설치 스크립트는 <설치 루트>/hermes-agent에 소스와 Python 환경(venv 또는 .hermes)을 둠
+        # (기본 루트는 $HERMES_HOME, root FHS 설치는 /usr/local/lib). Unix는 ~/.local/bin에 체크아웃의
+        # 진입점을 exec하는 셸 shim hermes·hermes-agent·hermes-acp(구버전은 심볼릭 링크)를 두고,
+        # Windows는 bin 런처 또는 venv 진입점을 등록함.
         root = _hermes_checkout(executable, resolved)
         if root:
             paths = (root,) if executable.is_relative_to(root) else (executable, root)
@@ -663,6 +719,15 @@ def uninstall_plan(status: AgentStatus, *, home: Path | None = None) -> tuple[Un
                 companions = tuple(
                     candidate for name in ("hermes.exe", "hermes.cmd", "hermes-acp.exe", "hermes-acp.cmd")
                     if (candidate := executable.parent / name) != executable and candidate.is_file()
+                )
+                paths = (executable, *companions, root)
+            elif sys.platform != "win32" and not executable.is_relative_to(root):
+                # 같은 체크아웃을 가리키는 보조 shim만 함께 제거함.
+                companions = tuple(
+                    candidate for name in ("hermes-agent", "hermes-acp")
+                    if (candidate := executable.parent / name) != executable
+                    and (candidate.is_file() or candidate.is_symlink())
+                    and _hermes_checkout(candidate, candidate.resolve()) == root
                 )
                 paths = (executable, *companions, root)
             variables = ("HERMES_HOME",) if sys.platform == "win32" else ()
@@ -697,10 +762,12 @@ def _hermes_checkout(executable: Path, resolved: Path) -> Path | None:
             return root
     target = resolved
     if executable == resolved and not _is_native_binary(resolved, _PE_MAGIC + _UNIX_MAGIC):
-        match = re.search(r'^exec\s+"([^"]+)"', _read(executable), re.MULTILINE)
+        # shim은 exec "<경로>" 또는 exec <경로> 형식으로 체크아웃의 진입점을 호출함.
+        match = re.search(r'^exec\s+(?:"([^"]+)"|(\S+))', _read(executable), re.MULTILINE)
         if match:
-            target = Path(match.group(1)).resolve()
-    if target.parent.parent.name != "venv":
+            target = Path(match.group(1) or match.group(2)).resolve()
+    # 진입점은 <체크아웃>/venv/bin/hermes(구버전) 또는 <체크아웃>/.hermes/bin/hermes(최신)임.
+    if target.parent.name not in ("bin", "Scripts"):
         return None
     root = target.parent.parent.parent
     return root if (root / "hermes_cli").is_dir() else None

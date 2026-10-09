@@ -239,6 +239,30 @@ class DetectionTests(unittest.TestCase):
                     self.assertEqual(reason, "")
                     self.assertEqual(command.argv, (str(executable), "update", "--yes"))
 
+    def test_windows_omp_is_found_in_official_install_dir(self):
+        for custom_dir in (False, True):
+            with self.subTest(custom_dir=custom_dir), tempfile.TemporaryDirectory() as directory:
+                home = Path(directory)
+                install_dir = home / ("custom omp" if custom_dir else "AppData/Local/omp")
+                install_dir.mkdir(parents=True)
+                executable = install_dir / "omp.exe"
+                executable.write_bytes(b"MZ\x90\x00")
+                (home / ".omp/agent").mkdir(parents=True)
+                (home / ".omp/agent/config.yml").write_text("modelRoles:\n  default: openai/gpt-5\n", encoding="utf-8")
+                env = {"PATH": "", "LOCALAPPDATA": str(home / "AppData/Local")}
+                if custom_dir:
+                    env["PI_INSTALL_DIR"] = str(install_dir)
+                with patch("agents_status.core.sys.platform", "win32"), patch("agents_status.core._version", return_value="18.8.6") as probe:
+                    status = scan_agent(SPECS["omp"], home=home, env=env, path="")
+                self.assertEqual(status.status, StatusKind.INSTALLED)
+                self.assertEqual(status.executable, executable)
+                self.assertEqual(status.version, "18.8.6")
+                self.assertEqual(status.provider, "openai")
+                probe.assert_called_once_with(executable, ("--version",), home)
+                with patch("agents_status.core.sys.platform", "linux"):
+                    status = scan_agent(SPECS["omp"], home=home, env=env, path="")
+                self.assertEqual(status.status, StatusKind.CONFIG_ONLY)
+
     def test_windows_hermes_prefers_path_installation(self):
         with tempfile.TemporaryDirectory() as directory:
             home = Path(directory)
@@ -928,6 +952,140 @@ class UninstallTests(unittest.IsolatedAsyncioTestCase):
             self.assertIsNone(plan)
             self.assertIn("판별하지 못했습니다", reason)
 
+    async def test_hermes_unix_store_launcher_uninstall_removes_companion_shims(self):
+        # 최신 설치는 <체크아웃>/.hermes/bin의 진입점을 따옴표 없이 exec하는 shim 세 개를 ~/.local/bin에 둠.
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            root = home / ".hermes/hermes-agent"
+            (root / "hermes_cli").mkdir(parents=True)
+            (root / ".hermes/bin").mkdir(parents=True)
+            for name in ("hermes", "hermes-acp"):
+                (root / ".hermes/bin" / name).write_text("#!/bin/sh\nexec /usr/bin/python3 -I -c 'pass'\n")
+            local_bin = home / ".local/bin"
+            local_bin.mkdir(parents=True)
+            shim = local_bin / "hermes"
+            shim.write_text(f'#!/bin/sh\nexec {root / ".hermes/bin/hermes"} "$@"\n')
+            agent = local_bin / "hermes-agent"
+            agent.write_text(f'#!/bin/sh\nexec {root / ".hermes/bin/hermes"} --run-module run_agent "$@"\n')
+            acp = local_bin / "hermes-acp"
+            acp.write_text(f'#!/bin/sh\nexec {root / ".hermes/bin/hermes-acp"} "$@"\n')
+            shared = local_bin / "uv"
+            shared.write_bytes(b"\x7fELF\x02")
+            status = AgentStatus(SPECS["hermes"], StatusKind.INSTALLED, shim, "Hermes Agent v0.21.6", "openai")
+            with patch("agents_status.core.sys.platform", "linux"):
+                plan, reason = uninstall_plan(status, home=home)
+            self.assertEqual(reason, "")
+            self.assertEqual(plan.paths, (shim, agent, acp, root))
+            self.assertEqual(plan.variables, ())
+            with patch("agents_status.core._clean_user_environment", return_value=[]):
+                result = await run_uninstall(plan)
+            self.assertEqual(result.returncode, 0)
+            for path in (shim, agent, acp, root):
+                self.assertFalse(path.exists(), path)
+            self.assertTrue(shared.exists())
+            self.assertTrue((home / ".hermes").is_dir())
+
+            # 다른 체크아웃을 가리키는 보조 shim은 보존함.
+            (root / "hermes_cli").mkdir(parents=True)
+            (root / ".hermes/bin").mkdir(parents=True)
+            (root / ".hermes/bin/hermes").write_text("#!/bin/sh\n")
+            shim.write_text(f'#!/bin/sh\nexec "{root / ".hermes/bin/hermes"}" "$@"\n')
+            other = home / "opt/hermes-agent"
+            (other / "hermes_cli").mkdir(parents=True)
+            (other / ".hermes/bin").mkdir(parents=True)
+            (other / ".hermes/bin/hermes-acp").write_text("#!/bin/sh\n")
+            acp.write_text(f'#!/bin/sh\nexec {other / ".hermes/bin/hermes-acp"} "$@"\n')
+            with patch("agents_status.core.sys.platform", "linux"):
+                plan, reason = uninstall_plan(status, home=home)
+            self.assertEqual(reason, "")
+            self.assertEqual(plan.paths, (shim, root))
+
+    async def test_kilo_official_install_uninstall_removes_bin_directory(self):
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            bin_dir = home / ".kilo/bin"
+            (bin_dir / "tree-sitter").mkdir(parents=True)
+            (bin_dir / "tree-sitter/bash.so").write_bytes(b"\x7fELF\x02")
+            executable = bin_dir / "kilo"
+            executable.write_bytes(b"\x7fELF\x02")
+            config = home / ".config/kilo"
+            config.mkdir(parents=True)
+            (home / ".kilo/.gitignore").write_text("node_modules\n")
+            status = AgentStatus(SPECS["kilo"], StatusKind.INSTALLED, executable, "1.2.3", "openai")
+            plan, reason = uninstall_plan(status, home=home)
+            self.assertEqual(reason, "")
+            self.assertEqual(plan.paths, (bin_dir,))
+            self.assertIn(str(bin_dir), plan.display)
+            with patch("agents_status.core._clean_user_environment", return_value=[]):
+                result = await run_uninstall(plan)
+            self.assertEqual(result.returncode, 0)
+            self.assertFalse(bin_dir.exists())
+            self.assertTrue(config.exists())
+            self.assertTrue((home / ".kilo/.gitignore").exists())
+
+            # Windows 공식 설치의 kilo.exe도 같은 방식으로 판별함.
+            bin_dir.mkdir(parents=True)
+            windows = bin_dir / "kilo.exe"
+            windows.write_bytes(b"MZ\x90\x00")
+            status = AgentStatus(SPECS["kilo"], StatusKind.INSTALLED, windows, "1.2.3", "openai")
+            plan, reason = uninstall_plan(status, home=home)
+            self.assertEqual(reason, "")
+            self.assertEqual(plan.paths, (bin_dir,))
+
+            # 바이너리가 아닌 스크립트나 다른 위치의 설치는 판별하지 않음.
+            script = bin_dir / "kilo"
+            script.write_text("#!/bin/sh\nexec node /opt/kilo/index.js\n")
+            status = AgentStatus(SPECS["kilo"], StatusKind.INSTALLED, script, "1.2.3", "openai")
+            plan, reason = uninstall_plan(status, home=home)
+            self.assertIsNone(plan)
+            self.assertIn("판별하지 못했습니다", reason)
+            elsewhere = home / "opt/kilo"
+            elsewhere.parent.mkdir()
+            elsewhere.write_bytes(b"\x7fELF\x02")
+            status = AgentStatus(SPECS["kilo"], StatusKind.INSTALLED, elsewhere, "1.2.3", "openai")
+            plan, reason = uninstall_plan(status, home=home)
+            self.assertIsNone(plan)
+
+    async def test_omp_official_binary_uninstall(self):
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            # Windows 기본 설치 위치는 전용 디렉터리이므로 디렉터리째 삭제함.
+            install_root = home / "AppData/Local/omp"
+            install_root.mkdir(parents=True)
+            executable = install_root / "omp.exe"
+            executable.write_bytes(b"MZ\x90\x00")
+            config = home / ".omp/agent"
+            config.mkdir(parents=True)
+            status = AgentStatus(SPECS["omp"], StatusKind.INSTALLED, executable, "18.8.6", "openai")
+            with patch("agents_status.core.sys.platform", "win32"), patch.dict(os.environ, {"LOCALAPPDATA": str(home / "AppData/Local")}):
+                plan, reason = uninstall_plan(status, home=home)
+            self.assertEqual(reason, "")
+            self.assertEqual(plan.paths, (install_root,))
+            with patch("agents_status.core._clean_user_environment", return_value=[]):
+                result = await run_uninstall(plan)
+            self.assertEqual(result.returncode, 0)
+            self.assertFalse(install_root.exists())
+            self.assertTrue(config.exists())
+
+            # Unix 기본 위치 ~/.local/bin과 사용자 지정 위치는 공용 디렉터리이므로 실행 파일만 삭제함.
+            for location in (home / ".local/bin/omp", home / "opt/tools/omp"):
+                location.parent.mkdir(parents=True)
+                location.write_bytes(b"\x7fELF\x02")
+                status = AgentStatus(SPECS["omp"], StatusKind.INSTALLED, location, "18.8.6", "openai")
+                with patch("agents_status.core.sys.platform", "linux"):
+                    plan, reason = uninstall_plan(status, home=home)
+                self.assertEqual(reason, "")
+                self.assertEqual(plan.paths, (location,))
+
+            # npm 전역 설치의 셸 shim은 바이너리가 아니므로 이 방식으로 판별하지 않음.
+            shim = home / "opt/npm/omp"
+            shim.parent.mkdir()
+            shim.write_text("#!/usr/bin/env bun\n")
+            status = AgentStatus(SPECS["omp"], StatusKind.INSTALLED, shim, "18.8.6", "openai")
+            plan, reason = uninstall_plan(status, home=home)
+            self.assertIsNone(plan)
+            self.assertIn("판별하지 못했습니다", reason)
+
     async def test_windows_bun_shim_uninstall_follows_bunx_sidecar(self):
         # Bun은 Windows에서 ~/.bun/bin/<이름>.exe shim과 대상 경로를 UTF-16으로 담은 <이름>.bunx를 둠.
         with tempfile.TemporaryDirectory() as directory:
@@ -1179,26 +1337,31 @@ class UninstallTests(unittest.IsolatedAsyncioTestCase):
             result = subprocess.run((*command.argv[:-1], stub + command.argv[-1]), capture_output=True, timeout=10)
             self.assertNotEqual(result.returncode, 0)
 
-    async def test_omp_install_requires_bun_runtime(self):
+    async def test_omp_install_uses_official_binary_installer(self):
+        # npm 패키지는 실행에 Bun이 필요하므로 Bun 없이 동작하는 공식 설치 스크립트의 --binary 모드를 사용함.
         status = AgentStatus(SPECS["omp"], StatusKind.MISSING, None, "-", "-")
-        for platform, runtime in (("win32", "bun.exe"), ("linux", "bun")):
-            for available in (False, True):
-                with self.subTest(platform=platform, available=available):
-                    # Windows에서 bun.cmd만 발견되는 경우도 런타임 누락으로 처리함.
-                    tools = {"npm": "/bin/npm", "bun": "/bin/bun.cmd"} if platform == "win32" else {"npm": "/bin/npm"}
-                    if available:
-                        tools[runtime] = f"/bin/{runtime}"
-                    with patch("agents_status.core.sys.platform", platform), patch("agents_status.core._which", side_effect=tools.get):
-                        command, reason = install_command(status)
-                    if available:
-                        self.assertEqual(command.argv, (
-                            "/bin/npm", "install", "--global", "@oh-my-pi/pi-coding-agent@latest",
-                        ))
-                        self.assertEqual(reason, "")
-                    else:
-                        self.assertIsNone(command)
-                        self.assertIn("Bun", reason)
-                        self.assertIn("PATH", reason)
+        tools = {"npm": "/bin/npm", "pwsh": r"C:\pwsh.exe", "curl": "/bin/curl", "bash": "/bin/bash"}
+        with patch("agents_status.core.sys.platform", "win32"), patch("agents_status.core._which", side_effect=tools.get):
+            command, reason = install_command(status)
+        self.assertEqual(reason, "")
+        self.assertEqual(command.argv[:5], (r"C:\pwsh.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command"))
+        self.assertIn("https://omp.sh/install.ps1", command.argv[5])
+        self.assertIn("-Binary", command.argv[5])
+        self.assertNotIn("bun", command.argv[5].lower())
+        with patch("agents_status.core.sys.platform", "win32"), patch("agents_status.core._which", side_effect={"npm": "/bin/npm"}.get):
+            command, reason = install_command(status)
+        self.assertIsNone(command)
+        self.assertIn("PowerShell", reason)
+        with patch("agents_status.core.sys.platform", "linux"), patch("agents_status.core._which", side_effect=tools.get):
+            command, reason = install_command(status)
+        self.assertEqual(reason, "")
+        self.assertEqual(command.argv[:4], ("/bin/bash", "-o", "pipefail", "-c"))
+        self.assertEqual(command.argv[4], "curl -fsSL https://omp.sh/install | sh -s -- --binary")
+        self.assertEqual(command.display, command.argv[4])
+        with patch("agents_status.core.sys.platform", "linux"), patch("agents_status.core._which", side_effect={"npm": "/bin/npm", "bash": "/bin/bash"}.get):
+            command, reason = install_command(status)
+        self.assertIsNone(command)
+        self.assertIn("curl", reason)
 
 
 if __name__ == "__main__":
