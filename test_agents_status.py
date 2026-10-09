@@ -1277,17 +1277,18 @@ class UninstallTests(unittest.IsolatedAsyncioTestCase):
                 winreg.DeleteKey(winreg.HKEY_CURRENT_USER, key_path)
                 winreg.DeleteKey(winreg.HKEY_CURRENT_USER, r"Software\agents-status-test")
 
-    async def test_claude_install_allows_required_postinstall(self):
-        for system in ("linux", "win32", "darwin"):
-            with self.subTest(system=system), patch("agents_status.core.sys.platform", system), patch("agents_status.core._which", return_value="/bin/npm"):
-                status = AgentStatus(SPECS["claude"], StatusKind.MISSING, None, "-", "-")
-                command, reason = install_command(status)
-                self.assertEqual(reason, "")
-                self.assertEqual(command.argv, (
-                    "/bin/npm", "install", "--global",
-                    "--allow-scripts=@anthropic-ai/claude-code", "@anthropic-ai/claude-code@latest",
-                ))
-                self.assertIn("--allow-scripts=@anthropic-ai/claude-code", command.display)
+    async def test_native_wrapper_install_allows_required_postinstall(self):
+        for key, package in (("claude", "@anthropic-ai/claude-code"), ("opencode", "opencode-ai")):
+            for system in ("linux", "win32", "darwin"):
+                with self.subTest(agent=key, system=system), patch("agents_status.core.sys.platform", system), patch("agents_status.core._which", return_value="/bin/npm"):
+                    status = AgentStatus(SPECS[key], StatusKind.MISSING, None, "-", "-")
+                    command, reason = install_command(status)
+                    self.assertEqual(reason, "")
+                    self.assertEqual(command.argv, (
+                        "/bin/npm", "install", "--global",
+                        f"--allow-scripts={package}", f"{package}@latest",
+                    ))
+                    self.assertIn(f"--allow-scripts={package}", command.display)
 
     async def test_install_command_and_missing_dependencies(self):
         status = AgentStatus(SPECS["codex"], StatusKind.CONFIG_ONLY, None, "-", "-")

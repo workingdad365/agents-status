@@ -608,8 +608,8 @@ def install_command(status: AgentStatus) -> tuple[UpdateCommand | None, str]:
         return UpdateCommand((bash, "-o", "pipefail", "-c", script), script), ""
     package = PACKAGES.get(status.spec.key)
     if package and (npm := _which("npm")):
-        # npm 12는 허용되지 않은 postinstall을 건너뛰므로 Claude 바이너리 배치를 명시적으로 허용함.
-        scripts = (f"--allow-scripts={package}",) if status.spec.key == "claude" else ()
+        # npm 12에서 Claude·OpenCode의 필수 바이너리 배치 스크립트 실행을 허용함.
+        scripts = (f"--allow-scripts={package}",) if status.spec.key in ("claude", "opencode") else ()
         argv = (npm, "install", "--global", *scripts, f"{package}@latest")
         return UpdateCommand(argv, " ".join(argv)), ""
     if package:
