@@ -1,7 +1,7 @@
 import asyncio
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 import shutil
 import subprocess
 import sys
@@ -801,6 +801,92 @@ class UninstallTests(unittest.IsolatedAsyncioTestCase):
             plan, reason = uninstall_plan(status, home=home)
             self.assertIsNone(plan)
             self.assertIn("판별하지 못했습니다", reason)
+
+    async def test_windows_bun_shim_uninstall_follows_bunx_sidecar(self):
+        # Bun은 Windows에서 ~/.bun/bin/<이름>.exe shim과 대상 경로를 UTF-16으로 담은 <이름>.bunx를 둠.
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            bun_home = home / ".bun"
+            (bun_home / "bin").mkdir(parents=True)
+            (bun_home / "bin/bun.exe").write_bytes(b"MZ")
+            root = bun_home / "install/global/node_modules/@opencode/cli"
+            (root / "bin").mkdir(parents=True)
+            (root / "package.json").write_text('{"name":"@opencode/cli"}')
+            (root / "bin/opencode.exe").write_bytes(b"MZ")
+            executable = bun_home / "bin/opencode.exe"
+            executable.write_bytes(b"MZ")
+            relative = PureWindowsPath("install/global/node_modules/@opencode/cli/bin/opencode.exe")
+            (bun_home / "bin/opencode.bunx").write_bytes(f'{relative}"'.encode("utf-16-le") + b"\x00\x000\xab")
+            status = AgentStatus(SPECS["opencode"], StatusKind.INSTALLED, executable, "2.0.24", "openai")
+            with patch("shutil.which", return_value=None):
+                plan, reason = uninstall_plan(status, home=home)
+            self.assertEqual(reason, "")
+            self.assertEqual(plan.command.argv, (str(bun_home / "bin/bun.exe"), "remove", "--global", "@opencode/cli"))
+
+            (bun_home / "bin/opencode.bunx").write_bytes(b"\x00\x00")
+            with patch("shutil.which", return_value=None):
+                plan, reason = uninstall_plan(status, home=home)
+            self.assertIsNone(plan)
+            self.assertIn("판별하지 못했습니다", reason)
+
+    async def test_windows_npm_prefix_uninstall_uses_prefix_layout(self):
+        # Windows npm 전역 설치는 <prefix>/<이름>.cmd shim과 <prefix>/node_modules/<패키지>를 둠.
+        with tempfile.TemporaryDirectory() as directory:
+            prefix = Path(directory) / "nodejs"
+            root = prefix / "node_modules/@openai/codex"
+            root.mkdir(parents=True)
+            (root / "package.json").write_text('{"name":"@openai/codex"}')
+            executable = prefix / "codex.CMD"
+            executable.write_text("@echo off")
+            status = AgentStatus(SPECS["codex"], StatusKind.INSTALLED, executable, "1.0", "openai")
+            expected = ("uninstall", "--global", "--prefix", str(prefix), "@openai/codex")
+
+            with patch("shutil.which", return_value=str(prefix.parent / "other/npm.cmd")):
+                plan, reason = uninstall_plan(status)
+            self.assertEqual(reason, "")
+            self.assertEqual(plan.command.argv, (str(prefix.parent / "other/npm.cmd"), *expected))
+
+            (prefix / "npm.cmd").write_text("@echo off")
+            with patch("shutil.which", return_value=str(prefix.parent / "other/npm.cmd")):
+                plan, reason = uninstall_plan(status)
+            self.assertEqual(plan.command.argv, (str(prefix / "npm.cmd"), *expected))
+
+            with patch("shutil.which", return_value=None):
+                command, reason = update_command(AgentStatus(SPECS["crush"], StatusKind.INSTALLED, prefix / "crush.cmd", "1.0", "-"))
+            self.assertIsNone(command)
+            self.assertIn("판별하지 못했습니다", reason)
+
+    async def test_winget_portable_uninstall_uses_package_identifier(self):
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            packages = home / "AppData/Local/Microsoft/WinGet/Packages"
+            install_root = packages / "GitHub.Copilot_Microsoft.Winget.Source_8wekyb3d8bbwe"
+            install_root.mkdir(parents=True)
+            executable = install_root / "copilot.EXE"
+            executable.write_bytes(b"MZ")
+            (install_root / "copilot.exe.old").write_bytes(b"MZ")
+            status = AgentStatus(SPECS["copilot"], StatusKind.INSTALLED, executable, "1.0.94", "github-copilot")
+            winget = str(home / "winget.exe")
+            with patch.dict(os.environ, {"LOCALAPPDATA": str(home / "AppData/Local")}):
+                with patch("shutil.which", side_effect=lambda name: winget if name == "winget" else None):
+                    plan, reason = uninstall_plan(status, home=home)
+                self.assertEqual(reason, "")
+                self.assertEqual(plan.command.argv[:5], (winget, "uninstall", "--id", "GitHub.Copilot", "--exact"))
+                self.assertIn("--purge", plan.command.argv)
+                self.assertIn("--force", plan.command.argv)
+                self.assertIn("--disable-interactivity", plan.command.argv)
+
+                with patch("shutil.which", return_value=None):
+                    plan, reason = uninstall_plan(status, home=home)
+                self.assertIsNone(plan)
+                self.assertIn("winget", reason)
+
+                stray = packages / "copilot.exe"
+                stray.write_bytes(b"MZ")
+                with patch("shutil.which", return_value=winget):
+                    plan, reason = uninstall_plan(AgentStatus(SPECS["copilot"], StatusKind.INSTALLED, stray, "1", "-"), home=home)
+                self.assertIsNone(plan)
+                self.assertIn("판별하지 못했습니다", reason)
 
     @unittest.skipUnless(sys.platform == "win32", "Windows 레지스트리 전용")
     async def test_windows_user_environment_cleanup(self):

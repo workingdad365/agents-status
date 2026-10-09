@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 import re
 import shutil
 import stat
@@ -338,8 +338,35 @@ async def scan_agents(specs: Sequence[AgentSpec] = AGENTS) -> list[AgentStatus]:
         return list(await asyncio.gather(*(asyncio.to_thread(scan_agent, spec, cwd=scratch) for spec in specs)))
 
 
+def _tool(directory: Path, name: str) -> Path | None:
+    """디렉터리의 패키지 관리자 실행 파일(Windows는 .exe 또는 .cmd)."""
+    for candidate in (name, f"{name}.exe", f"{name}.cmd"):
+        path = directory / candidate
+        if path.is_file():
+            return path
+    return None
+
+
+def _shim_target(executable: Path) -> Path:
+    """실행 파일이 가리키는 실제 경로. 심볼릭 링크 외에 Bun의 Windows shim도 따라감.
+
+    Bun은 Windows에서 심볼릭 링크 대신 bin 디렉터리에 <이름>.exe shim을 두고, 같은 이름의 .bunx 파일에
+    대상 경로(bin의 상위 디렉터리 기준 상대 경로, UTF-16, 큰따옴표로 끝남)를 기록함.
+    """
+    sidecar = executable.with_suffix(".bunx")
+    if sidecar.is_file():
+        try:
+            text = sidecar.read_bytes().decode("utf-16-le", errors="ignore")
+        except OSError:
+            text = ""
+        target, quote, _ = text.partition('"')
+        if quote and target:
+            return Path(executable.parent.parent, *PureWindowsPath(target).parts).resolve()
+    return executable.resolve()
+
+
 def _package_update(executable: Path, packages: tuple[str, ...], *, uninstall: bool = False) -> UpdateCommand | None:
-    resolved = executable.resolve()
+    resolved = _shim_target(executable)
     for root in resolved.parents:
         if root.parent.name not in ("node_modules", *{p.split("/")[0] for p in packages if p.startswith("@")}):
             continue
@@ -352,15 +379,24 @@ def _package_update(executable: Path, packages: tuple[str, ...], *, uninstall: b
         # npm 전역 prefix를 고정하여 다른 Node 설치에 업데이트되는 문제 방지.
         if modules.parent.name == "lib":
             prefix = modules.parent.parent
-            npm = prefix / "bin/npm"
-            if npm.is_file():
+            npm = _tool(prefix / "bin", "npm")
+            if npm:
                 argv = (str(npm), "uninstall" if uninstall else "install", "--global", "--prefix", str(prefix), package if uninstall else f"{package}@latest")
                 return UpdateCommand(argv, " ".join(argv))
         if modules.parent.name == "global" and modules.parent.parent.name == "install":
-            bun = modules.parent.parent.parent / "bin/bun"
-            if bun.is_file():
+            bun = _tool(modules.parent.parent.parent / "bin", "bun")
+            if bun:
                 argv = (str(bun), "remove" if uninstall else "add", "--global", package if uninstall else f"{package}@latest")
                 return UpdateCommand(argv, " ".join(argv))
+    # Windows npm 전역 설치는 prefix 디렉터리에 <이름>.cmd shim과 node_modules를 두므로 shim 위치로 판별함.
+    prefix = executable.parent
+    for package in packages:
+        if _json_string(prefix / "node_modules" / package / "package.json", "name") != package:
+            continue
+        npm = _tool(prefix, "npm") or (Path(found) if (found := shutil.which("npm")) else None)
+        if npm:
+            argv = (str(npm), "uninstall" if uninstall else "install", "--global", "--prefix", str(prefix), package if uninstall else f"{package}@latest")
+            return UpdateCommand(argv, " ".join(argv))
     for directory, flag in (("Cellar", "--formula"), ("Caskroom", "--cask")):
         if directory in resolved.parts:
             index = resolved.parts.index(directory)
@@ -386,6 +422,41 @@ PACKAGES = {
     "crush": "@charmland/crush",
     "openclaw": "openclaw",
 }
+
+# npm 패키지 이름이 바뀐 도구는 두 이름 모두 삭제 판별 대상으로 삼음.
+_PACKAGE_ALIASES = {
+    "opencode": ("@opencode/cli",),
+}
+
+
+def _package_names(key: str) -> tuple[str, ...]:
+    package = PACKAGES.get(key)
+    return (package, *_PACKAGE_ALIASES.get(key, ())) if package else ()
+
+
+def _winget_uninstall(resolved: Path, base: Path) -> tuple[UpdateCommand | None, str]:
+    """WinGet 이식 가능(portable) 패키지로 설치된 실행 파일의 삭제 명령.
+
+    WinGet은 이식 가능 패키지를 패키지 루트 아래 <패키지 ID>_<원본 식별자> 디렉터리에 설치하고 그 디렉터리를
+    사용자 PATH에 등록함. 자체 업데이트(예: copilot update)로 파일이 바뀐 경우를 위해 --force를,
+    백업 파일(.old)까지 지우기 위해 --purge를 사용함.
+    """
+    roots = (
+        Path(os.environ.get("LOCALAPPDATA", str(base / "AppData/Local"))) / "Microsoft/WinGet/Packages",
+        Path(os.environ.get("ProgramFiles", r"C:\Program Files")) / "WinGet/Packages",
+    )
+    for root in roots:
+        if not resolved.is_relative_to(root):
+            continue
+        identifier, separator, source = resolved.relative_to(root).parts[0].partition("_")
+        if not (identifier and separator and source):
+            return None, ""
+        winget = shutil.which("winget")
+        if not winget:
+            return None, f"WinGet 패키지({identifier})이지만 winget 명령을 찾을 수 없습니다."
+        argv = (winget, "uninstall", "--id", identifier, "--exact", "--purge", "--force", "--disable-interactivity", "--accept-source-agreements")
+        return UpdateCommand(argv, " ".join(argv)), ""
+    return None, ""
 
 
 def _codex_packages(home: Path | None = None) -> Path:
@@ -452,12 +523,16 @@ def uninstall_plan(status: AgentStatus, *, home: Path | None = None) -> tuple[Un
     if not status.executable:
         return UninstallPlan(), ""
     executable = status.executable
-    package = PACKAGES.get(status.spec.key)
-    command = _package_update(executable, (package,) if package else (), uninstall=True)
+    command = _package_update(executable, _package_names(status.spec.key), uninstall=True)
     if command:
         return UninstallPlan(command), ""
     base = Path.home() if home is None else home
     resolved = executable.resolve()
+    command, reason = _winget_uninstall(resolved, base)
+    if command:
+        return UninstallPlan(command), ""
+    if reason:
+        return None, reason
     if status.spec.key == "claude":
         root = base / ".local/share/claude"
         # Windows 네이티브 설치는 Unix의 심볼릭 링크 대신 bin에 PE 실행 파일을 둠.
