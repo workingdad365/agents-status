@@ -598,10 +598,17 @@ def uninstall_plan(status: AgentStatus, *, home: Path | None = None) -> tuple[Un
     if status.spec.key == "hermes":
         # 공식 설치 스크립트는 <설치 루트>/hermes-agent에 소스와 venv를 둠(기본 루트는 $HERMES_HOME,
         # root FHS 설치는 /usr/local/lib). Unix는 ~/.local/bin/hermes에 venv 진입점을 exec하는
-        # 셸 shim(구버전은 심볼릭 링크)을 두고, Windows는 venv\Scripts\hermes.exe를 PATH에 등록함.
+        # 셸 shim(구버전은 심볼릭 링크)을 두고, Windows는 bin 런처 또는 venv 진입점을 등록함.
         root = _hermes_checkout(executable, resolved)
         if root:
             paths = (root,) if executable.is_relative_to(root) else (executable, root)
+            if sys.platform == "win32" and executable.parent == root.parent / "bin":
+                # bin의 uv 등 공용 도구는 보존하고 Hermes 및 ACP 런처만 함께 제거함.
+                companions = tuple(
+                    candidate for name in ("hermes.exe", "hermes.cmd", "hermes-acp.exe", "hermes-acp.cmd")
+                    if (candidate := executable.parent / name) != executable and candidate.is_file()
+                )
+                paths = (executable, *companions, root)
             variables = ("HERMES_HOME",) if sys.platform == "win32" else ()
             return UninstallPlan(paths=paths, variables=variables), ""
     if status.spec.key == "antigravity" and executable.stem.lower() == "agy" and not executable.is_symlink():
@@ -621,6 +628,17 @@ def uninstall_plan(status: AgentStatus, *, home: Path | None = None) -> tuple[Un
 
 def _hermes_checkout(executable: Path, resolved: Path) -> Path | None:
     """hermes 실행 파일이 가리키는 공식 설치 체크아웃(hermes-agent) 디렉터리."""
+    if (
+        sys.platform == "win32"
+        and executable.parent.name.lower() == "bin"
+        and executable.name.lower() in ("hermes.exe", "hermes.cmd")
+        and not executable.is_symlink()
+    ):
+        # Windows 설치 스크립트는 venv 실행 파일을 bin에 복사하거나 cmd 런처를 생성함.
+        root = executable.parent.parent / "hermes-agent"
+        valid_launcher = executable.suffix.lower() == ".cmd" or _is_native_binary(executable, _PE_MAGIC)
+        if valid_launcher and (root / "hermes_cli").is_dir() and (root / "venv/Scripts/hermes.exe").is_file():
+            return root
     target = resolved
     if executable == resolved and not _is_native_binary(resolved, _PE_MAGIC + _UNIX_MAGIC):
         match = re.search(r'^exec\s+"([^"]+)"', _read(executable), re.MULTILINE)

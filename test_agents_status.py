@@ -757,6 +757,72 @@ class UninstallTests(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(root.exists())
             self.assertTrue((data / "config.yaml").exists())
 
+    async def test_hermes_windows_bin_uninstall_preserves_settings_and_shared_tools(self):
+        for location in ("AppData/Local/hermes", "custom hermes"):
+            for launcher in ("hermes.EXE", "hermes.cmd"):
+                with self.subTest(location=location, launcher=launcher), tempfile.TemporaryDirectory() as directory:
+                    home = Path(directory)
+                    data = home / location
+                    root = data / "hermes-agent"
+                    (root / "hermes_cli").mkdir(parents=True)
+                    (root / "venv/Scripts").mkdir(parents=True)
+                    target = root / "venv/Scripts/hermes.exe"
+                    target.write_bytes(b"MZ")
+                    bin_dir = data / "bin"
+                    bin_dir.mkdir()
+                    launchers = tuple(bin_dir / name for name in (
+                        launcher if launcher.lower() == "hermes.exe" else "hermes.exe",
+                        "hermes.cmd", "hermes-acp.exe", "hermes-acp.cmd",
+                    ))
+                    for path in launchers:
+                        if path.suffix.lower() == ".exe":
+                            path.write_bytes(b"MZ")
+                        else:
+                            path.write_text(f'@echo off\n"{target}" %*\n', encoding="utf-8")
+                    shared = (bin_dir / "uv.exe", bin_dir / "browser.exe")
+                    for path in shared:
+                        path.write_bytes(b"MZ")
+                    config = data / "config.yaml"
+                    config.write_text("model:\n  provider: openai\n", encoding="utf-8")
+                    executable = bin_dir / launcher
+                    status = AgentStatus(SPECS["hermes"], StatusKind.INSTALLED, executable, "1", "openai")
+                    with patch("agents_status.core.sys.platform", "win32"):
+                        plan, reason = uninstall_plan(status, home=home)
+                    self.assertEqual(reason, "")
+                    self.assertIsNone(plan.command)
+                    self.assertEqual(set(plan.paths), {*launchers, root})
+                    self.assertEqual(plan.variables, ("HERMES_HOME",))
+                    with patch("agents_status.core._clean_user_environment", return_value=[]) as cleanup:
+                        result = await run_uninstall(plan)
+                    self.assertEqual(result.returncode, 0, result.output)
+                    self.assertFalse(root.exists())
+                    self.assertFalse(any(path.exists() for path in launchers))
+                    self.assertTrue(all(path.exists() for path in shared))
+                    self.assertTrue(config.exists())
+                    self.assertNotIn(bin_dir, cleanup.call_args.args[0])
+                    self.assertNotIn(data, cleanup.call_args.args[0])
+
+    async def test_hermes_windows_bin_requires_matching_checkout(self):
+        for missing in ("checkout", "entrypoint", "native_binary"):
+            with self.subTest(missing=missing), tempfile.TemporaryDirectory() as directory:
+                home = Path(directory)
+                data = home / "hermes"
+                root = data / "hermes-agent"
+                if missing != "checkout":
+                    (root / "hermes_cli").mkdir(parents=True)
+                if missing != "entrypoint":
+                    (root / "venv/Scripts").mkdir(parents=True)
+                    (root / "venv/Scripts/hermes.exe").write_bytes(b"MZ")
+                executable = data / "bin/hermes.exe"
+                executable.parent.mkdir(parents=True)
+                executable.write_bytes(b"@echo off" if missing == "native_binary" else b"MZ")
+                status = AgentStatus(SPECS["hermes"], StatusKind.INSTALLED, executable, "1", "-")
+                with patch("agents_status.core.sys.platform", "win32"):
+                    plan, reason = uninstall_plan(status, home=home)
+                self.assertIsNone(plan)
+                self.assertIn("판별하지 못했습니다", reason)
+                self.assertTrue(executable.exists())
+
     async def test_hermes_unix_uninstall_removes_link_and_checkout(self):
         with tempfile.TemporaryDirectory() as directory:
             home = Path(directory)
