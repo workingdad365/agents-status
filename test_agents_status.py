@@ -17,6 +17,7 @@ from agents_status.core import (
     AGENTS, AgentStatus, CommandResult, StatusKind, UninstallPlan, UpdateCommand,
     config_paths, install_command, run_uninstall, run_update, scan_agent, uninstall_plan, update_command,
 )
+from agents_status.core import _clean_user_environment
 
 
 SPECS = {spec.key: spec for spec in AGENTS}
@@ -125,6 +126,24 @@ class ProviderTests(unittest.TestCase):
                     ".pi/agent/auth.json": {provider: {} for provider in providers},
                 })
                 self.assertEqual(status.provider, expected)
+
+    def test_hermes_provider_follows_hermes_home(self):
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            data = home / "AppData/Local/hermes"
+            data.mkdir(parents=True)
+            (data / "config.yaml").write_text("model:\n  provider: azure-foundry\n  default: gpt-6\n", encoding="utf-8")
+            env = {"HOME": directory, "PATH": "", "HERMES_HOME": str(data)}
+            status = scan_agent(SPECS["hermes"], home=home, env=env, path="")
+            self.assertEqual(status.status, StatusKind.CONFIG_ONLY)
+            self.assertEqual(status.provider, "azure-foundry")
+            with patch("agents_status.core.sys.platform", "win32"):
+                env = {"HOME": directory, "PATH": "", "LOCALAPPDATA": str(home / "AppData/Local")}
+                status = scan_agent(SPECS["hermes"], home=home, env=env, path="")
+            self.assertEqual(status.provider, "azure-foundry")
+            with patch("agents_status.core.sys.platform", "linux"):
+                status = scan_agent(SPECS["hermes"], home=home, env={"HOME": directory, "PATH": ""}, path="")
+            self.assertEqual(status.status, StatusKind.MISSING)
 
 
 class UpdateTests(unittest.TestCase):
@@ -543,6 +562,113 @@ class UninstallTests(unittest.IsolatedAsyncioTestCase):
             self.assertIsNone(plan)
             self.assertIn("판별하지 못했습니다", reason)
 
+    async def test_hermes_windows_uninstall_uses_hermes_home_and_removes_readonly_files(self):
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            data = home / "AppData/Local/hermes"
+            root = data / "hermes-agent"
+            (root / "hermes_cli").mkdir(parents=True)
+            (root / "venv/Scripts").mkdir(parents=True)
+            executable = root / "venv/Scripts/hermes.exe"
+            executable.write_bytes(b"MZ")
+            pack = root / ".git/objects/pack/pack.idx"
+            pack.parent.mkdir(parents=True)
+            pack.write_bytes(b"idx")
+            pack.chmod(0o444)
+            (data / "config.yaml").write_text("model:\n  provider: openai\n", encoding="utf-8")
+            status = AgentStatus(SPECS["hermes"], StatusKind.INSTALLED, executable, "Hermes Agent v0.18.2", "openai")
+            with patch.dict(os.environ, {"HERMES_HOME": str(data)}):
+                plan, reason = uninstall_plan(status, home=home)
+                self.assertEqual(reason, "")
+                self.assertEqual(plan.paths, (root,))
+                self.assertEqual(plan.variables, ("HERMES_HOME",) if sys.platform == "win32" else ())
+                self.assertEqual(config_paths(SPECS["hermes"], home=home), (data,))
+            with patch("agents_status.core._clean_user_environment", return_value=[]) as cleanup:
+                result = await run_uninstall(plan)
+            self.assertEqual(cleanup.call_args.args, ((root,), plan.variables))
+            self.assertEqual(result.returncode, 0)
+            self.assertFalse(root.exists())
+            self.assertTrue((data / "config.yaml").exists())
+
+    async def test_hermes_unix_uninstall_removes_link_and_checkout(self):
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            unix_root = home / ".hermes/hermes-agent"
+            (unix_root / "hermes_cli").mkdir(parents=True)
+            (unix_root / "venv/bin").mkdir(parents=True)
+            target = unix_root / "venv/bin/hermes"
+            target.touch()
+            wrapper = home / ".local/bin/hermes"
+            wrapper.parent.mkdir(parents=True)
+            try:
+                wrapper.symlink_to(target)
+            except OSError:
+                self.skipTest("이 환경에서는 심볼릭 링크를 만들 수 없음")
+            status = AgentStatus(SPECS["hermes"], StatusKind.INSTALLED, wrapper, "Hermes Agent v0.18.2", "openai")
+            with patch.dict(os.environ, {"HERMES_HOME": ""}), patch("agents_status.core.sys.platform", "linux"):
+                plan, reason = uninstall_plan(status, home=home)
+            self.assertEqual(reason, "")
+            self.assertEqual(plan.paths, (wrapper, unix_root))
+
+    async def test_hermes_unix_shim_uninstall_removes_shim_and_checkout(self):
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            for root in (home / ".hermes/hermes-agent", home / "usr/local/lib/hermes-agent"):
+                with self.subTest(root=root):
+                    (root / "hermes_cli").mkdir(parents=True)
+                    (root / "venv/bin").mkdir(parents=True)
+                    (root / "venv/bin/hermes").write_text("#!/usr/bin/python\n")
+                    shim = home / ".local/bin/hermes"
+                    shim.parent.mkdir(parents=True, exist_ok=True)
+                    shim.write_text(f'#!/usr/bin/env bash\nunset PYTHONPATH\nexec "{root / "venv/bin/hermes"}" "$@"\n')
+                    status = AgentStatus(SPECS["hermes"], StatusKind.INSTALLED, shim, "Hermes Agent v0.18.2", "openai")
+                    plan, reason = uninstall_plan(status, home=home)
+                    self.assertEqual(reason, "")
+                    self.assertEqual(plan.paths, (shim, root))
+                    with patch("agents_status.core._clean_user_environment", return_value=[]):
+                        result = await run_uninstall(plan)
+                    self.assertEqual(result.returncode, 0)
+                    self.assertFalse(root.exists())
+                    self.assertFalse(shim.exists())
+
+            stray = home / ".local/bin/hermes"
+            stray.write_text('#!/bin/sh\nexec "/opt/other/venv/bin/hermes" "$@"\n')
+            status = AgentStatus(SPECS["hermes"], StatusKind.INSTALLED, stray, "1", "-")
+            plan, reason = uninstall_plan(status, home=home)
+            self.assertIsNone(plan)
+            self.assertIn("판별하지 못했습니다", reason)
+
+    @unittest.skipUnless(sys.platform == "win32", "Windows 레지스트리 전용")
+    async def test_windows_user_environment_cleanup(self):
+        import winreg
+
+        key_path = r"Software\agents-status-test\Environment"
+        with tempfile.TemporaryDirectory() as directory:
+            data = Path(directory) / "hermes"
+            data.mkdir()
+            with winreg.CreateKey(winreg.HKEY_CURRENT_USER, key_path) as key:
+                winreg.SetValueEx(key, "Path", 0, winreg.REG_EXPAND_SZ, f"C:\\keep;{data}\\hermes-agent\\venv\\Scripts;{data}\\bin\\;%SystemRoot%")
+                winreg.SetValueEx(key, "HERMES_HOME", 0, winreg.REG_SZ, str(data))
+                winreg.SetValueEx(key, "OTHER", 0, winreg.REG_SZ, str(data))
+            try:
+                with patch("agents_status.core._ENVIRONMENT_KEY", key_path), patch("agents_status.core._broadcast_environment_change") as broadcast:
+                    notes = _clean_user_environment((data / "hermes-agent",), ("HERMES_HOME",))
+                    self.assertEqual(len(notes), 1)
+                    with winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path) as key:
+                        self.assertEqual(winreg.QueryValueEx(key, "Path"), (f"C:\\keep;{data}\\bin\\;%SystemRoot%", winreg.REG_EXPAND_SZ))
+                        self.assertEqual(winreg.QueryValueEx(key, "HERMES_HOME")[0], str(data))
+                    notes = _clean_user_environment((data,), ("HERMES_HOME",))
+                    self.assertEqual(len(notes), 2)
+                    with winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path) as key:
+                        self.assertEqual(winreg.QueryValueEx(key, "Path")[0], "C:\\keep;%SystemRoot%")
+                        self.assertRaises(FileNotFoundError, winreg.QueryValueEx, key, "HERMES_HOME")
+                        self.assertEqual(winreg.QueryValueEx(key, "OTHER")[0], str(data))
+                    self.assertEqual(broadcast.call_count, 2)
+                    self.assertEqual(_clean_user_environment((data,), ("HERMES_HOME",)), [])
+            finally:
+                winreg.DeleteKey(winreg.HKEY_CURRENT_USER, key_path)
+                winreg.DeleteKey(winreg.HKEY_CURRENT_USER, r"Software\agents-status-test")
+
     async def test_install_command_and_missing_dependencies(self):
         status = AgentStatus(SPECS["codex"], StatusKind.CONFIG_ONLY, None, "-", "-")
         with patch("shutil.which", return_value="/bin/npm"):
@@ -553,6 +679,23 @@ class UninstallTests(unittest.IsolatedAsyncioTestCase):
             command, reason = install_command(status)
         self.assertIsNone(command)
         self.assertIn("npm", reason)
+
+    async def test_hermes_install_uses_platform_script(self):
+        status = AgentStatus(SPECS["hermes"], StatusKind.MISSING, None, "-", "-")
+        with patch("agents_status.core.sys.platform", "win32"), patch("shutil.which", side_effect=lambda name: r"C:\pwsh.exe" if name == "pwsh" else None):
+            command, reason = install_command(status)
+        self.assertEqual(reason, "")
+        self.assertEqual(command.argv[:5], (r"C:\pwsh.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command"))
+        self.assertIn("install.ps1", command.argv[5])
+        self.assertIn("-NonInteractive", command.argv[5])
+        with patch("agents_status.core.sys.platform", "win32"), patch("shutil.which", return_value=None):
+            command, reason = install_command(status)
+        self.assertIsNone(command)
+        self.assertIn("PowerShell", reason)
+        with patch("agents_status.core.sys.platform", "linux"), patch("shutil.which", return_value="/bin/tool"):
+            command, reason = install_command(status)
+        self.assertEqual(command.argv[:3], ("/bin/tool", "-o", "pipefail"))
+        self.assertIn("install.sh", command.argv[4])
 
 
 if __name__ == "__main__":

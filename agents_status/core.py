@@ -9,7 +9,9 @@ import os
 from pathlib import Path
 import re
 import shutil
+import stat
 import subprocess
+import sys
 import tempfile
 from typing import Callable, Mapping, Sequence
 
@@ -59,12 +61,19 @@ class CommandResult:
 class UninstallPlan:
     command: UpdateCommand | None = None
     paths: tuple[Path, ...] = ()
+    # 값이 삭제한 경로를 가리키면 함께 제거할 사용자 환경 변수(Windows 전용).
+    variables: tuple[str, ...] = ()
 
     @property
     def display(self) -> str:
         if self.command:
             return self.command.display
-        return "삭제: " + ", ".join(map(str, self.paths)) if self.paths else "설치된 프로그램 없음"
+        if not self.paths:
+            return "설치된 프로그램 없음"
+        text = "삭제: " + ", ".join(map(str, self.paths))
+        if sys.platform == "win32":
+            text += "\n정리: 삭제한 경로를 가리키는 사용자 PATH 항목" + "".join(f", {name}" for name in self.variables)
+        return text
 
 
 def _read(path: Path) -> str:
@@ -199,9 +208,23 @@ def _crush(home: Path, env: Mapping[str, str]) -> str:
     return provider.group(1) if provider else "unknown"
 
 
+def _hermes_home(home: Path, env: Mapping[str, str] | None = None) -> Path:
+    """Hermes 데이터 디렉터리.
+
+    HERMES_HOME이 우선하며, 없으면 Windows는 %LOCALAPPDATA%\\hermes, 그 외는 ~/.hermes임.
+    공식 설치 스크립트는 이 디렉터리 아래 hermes-agent에 소스와 venv를 설치함.
+    """
+    environment = os.environ if env is None else env
+    custom = environment.get("HERMES_HOME", "").strip()
+    if custom:
+        return Path(custom)
+    if sys.platform == "win32":
+        return Path(environment.get("LOCALAPPDATA", str(home / "AppData/Local"))) / "hermes"
+    return home / ".hermes"
+
+
 def _hermes(home: Path, env: Mapping[str, str]) -> str:
-    del env
-    return _yaml_child(home / ".hermes/config.yaml", "model", "provider") or "unknown"
+    return _yaml_child(_hermes_home(home, env) / "config.yaml", "model", "provider") or "unknown"
 
 
 def _openclaw(home: Path, env: Mapping[str, str]) -> str:
@@ -239,6 +262,12 @@ def _scratch_directory() -> tempfile.TemporaryDirectory[str]:
     return tempfile.TemporaryDirectory(prefix="agents-status-", ignore_cleanup_errors=True)
 
 
+def _config_root(spec: AgentSpec, home: Path, env: Mapping[str, str] | None = None) -> Path:
+    if spec.key == "hermes":
+        return _hermes_home(home, env)
+    return home / spec.config_root
+
+
 def _version(executable: Path, args: Sequence[str], cwd: Path | str | None = None) -> str:
     try:
         result = subprocess.run(
@@ -270,12 +299,13 @@ def scan_agent(
         if found:
             break
     executable = Path(found) if found else None
-    provider = spec.provider_probe(base, environment) if executable or (base / spec.config_root).is_dir() else "-"
+    config_root = _config_root(spec, base, environment)
+    provider = spec.provider_probe(base, environment) if executable or config_root.is_dir() else "-"
     if executable:
         # 버전 조회도 홈 디렉터리(기본) 또는 지정한 디렉터리에서 실행하여 프로젝트 디렉터리 오염을 막음.
         version = _version(executable, spec.version_args, base if cwd is None else cwd)
         return AgentStatus(spec, StatusKind.INSTALLED, executable, version, provider)
-    if (base / spec.config_root).is_dir():
+    if config_root.is_dir():
         return AgentStatus(spec, StatusKind.CONFIG_ONLY, None, "-", provider)
     return AgentStatus(spec, StatusKind.MISSING, None, "-", "-")
 
@@ -343,6 +373,13 @@ def _codex_packages(home: Path | None = None) -> Path:
 
 def install_command(status: AgentStatus) -> tuple[UpdateCommand | None, str]:
     if status.spec.key == "hermes":
+        if sys.platform == "win32":
+            # Windows 공식 설치는 install.ps1이며 %LOCALAPPDATA%\hermes에 설치하고 사용자 PATH·HERMES_HOME을 등록함.
+            shell = shutil.which("pwsh") or shutil.which("powershell")
+            if not shell:
+                return None, "Hermes 설치에는 PowerShell이 필요합니다."
+            script = "& ([scriptblock]::Create((irm https://hermes-agent.nousresearch.com/install.ps1))) -NonInteractive"
+            return UpdateCommand((shell, "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script), script), ""
         if not shutil.which("curl") or not (bash := shutil.which("bash")):
             return None, "Hermes 설치에는 curl과 bash가 필요합니다."
         script = "curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash -s -- --non-interactive"
@@ -358,7 +395,7 @@ def install_command(status: AgentStatus) -> tuple[UpdateCommand | None, str]:
 
 def config_paths(spec: AgentSpec, *, home: Path | None = None) -> tuple[Path, ...]:
     base = Path.home() if home is None else home
-    paths = [base / spec.config_root]
+    paths = [_config_root(spec, base)]
     if spec.key == "claude":
         paths.append(base / ".claude.json")
     if spec.key in ("opencode", "kilo", "crush"):
@@ -405,9 +442,14 @@ def uninstall_plan(status: AgentStatus, *, home: Path | None = None) -> tuple[Un
     if status.spec.key == "opencode" and executable == base / ".opencode/bin/opencode":
         return UninstallPlan(paths=(executable,)), ""
     if status.spec.key == "hermes":
-        root = base / ".hermes/hermes-agent"
-        if resolved.is_relative_to(root) and (root / "hermes_cli").is_dir():
-            return UninstallPlan(paths=(executable, root)), ""
+        # 공식 설치 스크립트는 <설치 루트>/hermes-agent에 소스와 venv를 둠(기본 루트는 $HERMES_HOME,
+        # root FHS 설치는 /usr/local/lib). Unix는 ~/.local/bin/hermes에 venv 진입점을 exec하는
+        # 셸 shim(구버전은 심볼릭 링크)을 두고, Windows는 venv\Scripts\hermes.exe를 PATH에 등록함.
+        root = _hermes_checkout(executable, resolved)
+        if root:
+            paths = (root,) if executable.is_relative_to(root) else (executable, root)
+            variables = ("HERMES_HOME",) if sys.platform == "win32" else ()
+            return UninstallPlan(paths=paths, variables=variables), ""
     if status.spec.key == "antigravity" and executable.stem.lower() == "agy" and not executable.is_symlink():
         # 공식 설치 스크립트는 Windows에 %LOCALAPPDATA%\agy\bin\agy.exe, 그 외에는 ~/.local/bin/agy
         # (또는 --dir 지정 경로)로 단일 바이너리를 설치하며 agy update는 같은 폴더에 .old 백업을 남김.
@@ -423,14 +465,94 @@ def uninstall_plan(status: AgentStatus, *, home: Path | None = None) -> tuple[Un
     return None, f"{status.spec.name} 설치 경로({resolved})에서 지원하는 삭제 방식(npm/Bun/Homebrew/독립 바이너리)을 판별하지 못했습니다."
 
 
+def _hermes_checkout(executable: Path, resolved: Path) -> Path | None:
+    """hermes 실행 파일이 가리키는 공식 설치 체크아웃(hermes-agent) 디렉터리."""
+    target = resolved
+    if executable == resolved and not _is_native_binary(resolved, _PE_MAGIC + _UNIX_MAGIC):
+        match = re.search(r'^exec\s+"([^"]+)"', _read(executable), re.MULTILINE)
+        if match:
+            target = Path(match.group(1)).resolve()
+    if target.parent.parent.name != "venv":
+        return None
+    root = target.parent.parent.parent
+    return root if (root / "hermes_cli").is_dir() else None
+
+
+def _remove_readonly(function: Callable[..., object], path: str, error: BaseException) -> None:
+    """Windows에서 git 객체 등 읽기 전용 파일은 삭제가 거부되므로 쓰기 속성을 준 뒤 재시도함."""
+    if not isinstance(error, PermissionError):
+        raise error
+    os.chmod(path, stat.S_IWRITE)
+    function(path)
+
+
 def _remove_paths(paths: Sequence[Path]) -> None:
     for path in paths:
         if path.is_symlink():
             path.unlink()
         elif path.is_dir():
-            shutil.rmtree(path)
+            shutil.rmtree(path, onexc=_remove_readonly)
         else:
             path.unlink(missing_ok=True)
+
+
+_ENVIRONMENT_KEY = "Environment"
+
+
+def _within(path: str, roots: Sequence[Path]) -> bool:
+    try:
+        candidate = Path(os.path.expandvars(path.strip().strip('"')))
+    except (OSError, ValueError):
+        return False
+    return bool(candidate.parts) and any(candidate == root or candidate.is_relative_to(root) for root in roots)
+
+
+def _broadcast_environment_change() -> None:
+    """새로 시작하는 프로그램이 변경된 사용자 환경 변수를 읽도록 알림(Windows 전용)."""
+    try:
+        import ctypes
+
+        ctypes.windll.user32.SendMessageTimeoutW(0xFFFF, 0x001A, 0, "Environment", 0x0002, 5000, None)
+    except (AttributeError, OSError):
+        pass
+
+
+def _clean_user_environment(removed: Sequence[Path], variables: Sequence[str]) -> list[str]:
+    """삭제한 디렉터리를 가리키는 사용자 PATH 항목과 환경 변수를 레지스트리에서 제거함(Windows 전용).
+
+    Hermes·Antigravity 공식 설치 스크립트는 설치 디렉터리를 사용자 PATH에 등록하므로 삭제 후 정리함.
+    """
+    if sys.platform != "win32" or not removed:
+        return []
+    import winreg
+
+    roots = [Path(root) for root in removed]
+    notes: list[str] = []
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, _ENVIRONMENT_KEY, 0, winreg.KEY_READ | winreg.KEY_WRITE) as key:
+            try:
+                value, kind = winreg.QueryValueEx(key, "Path")
+            except FileNotFoundError:
+                value, kind = "", winreg.REG_EXPAND_SZ
+            entries = [entry for entry in str(value).split(";") if entry]
+            kept = [entry for entry in entries if not _within(entry, roots)]
+            if len(kept) != len(entries):
+                winreg.SetValueEx(key, "Path", 0, kind, ";".join(kept))
+                notes.extend(f"사용자 PATH에서 제거: {entry}" for entry in entries if entry not in kept)
+            for name in variables:
+                try:
+                    value, _ = winreg.QueryValueEx(key, name)
+                except FileNotFoundError:
+                    continue
+                if _within(str(value), roots):
+                    winreg.DeleteValue(key, name)
+                    notes.append(f"사용자 환경 변수 제거: {name}={value}")
+    except OSError as error:
+        notes.append(f"사용자 환경 변수 정리 실패: {error}")
+        return notes
+    if notes:
+        _broadcast_environment_change()
+    return notes
 
 
 async def run_uninstall(
@@ -442,10 +564,15 @@ async def run_uninstall(
         result = await run_update(plan.command, on_output=on_output)
         if result.returncode:
             return result
+    removed = (*plan.paths, *settings)
     try:
-        await asyncio.to_thread(_remove_paths, (*plan.paths, *settings))
+        await asyncio.to_thread(_remove_paths, removed)
     except OSError as error:
         return CommandResult(1, f"삭제 실패: {error}")
+    notes = await asyncio.to_thread(_clean_user_environment, removed, plan.variables)
+    if on_output is not None:
+        for note in notes:
+            on_output(note)
     return CommandResult(0, "삭제를 완료했습니다.")
 
 

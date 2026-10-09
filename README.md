@@ -67,9 +67,9 @@ agents-status
 
 삭제 버튼은 설치·업데이트 버튼 옆에 배치한다. 확인 창에서 `Y`는 프로그램과 설정·인증·사용 기록을 함께 삭제하고, `N`은 설정을 보존하고 프로그램만 삭제한다. `Esc` 또는 취소 버튼으로 취소한다. `설정만` 상태에서는 `Y`로 남은 설정을 정리할 수 있으며, `미설치` 상태에서는 삭제 버튼을 비활성화한다. 작업 중에는 새로고침·설치·업데이트·삭제 버튼을 비활성화하며 완료 후 상태를 다시 조회한다.
 
-설치는 npm 전역 패키지를 사용하며 Hermes는 공식 설치 스크립트의 비대화형 모드를 사용한다. Antigravity 항목의 신규 설치 대상은 기존 감지 대상 중 Gemini CLI이다.
+설치는 npm 전역 패키지를 사용하며 Hermes는 공식 설치 스크립트의 비대화형 모드를 사용한다(Windows는 PowerShell로 `install.ps1`, 그 외는 bash로 `install.sh`). Antigravity 항목의 신규 설치 대상은 기존 감지 대상 중 Gemini CLI이다.
 
-삭제는 실제 설치 경로에서 npm/Bun/Homebrew를 판별하여 해당 패키지 관리자를 사용한다. 기본 경로의 Claude·OpenCode·Hermes 네이티브 설치와 `~/.local/bin`의 독립 실행 바이너리도 지원한다. Codex 공식 설치 스크립트 설치는 `~/.local/bin/codex` 링크(macOS는 `codex-code-mode-host` 링크 포함)와 `~/.codex/packages`의 `standalone`·`app-server-daemon` 패키지를 삭제한다. 이때 실행 중인 app-server 데몬 프로세스는 종료하지 않으므로, Windows에서 데몬이 실행 중이면 파일 잠금으로 삭제가 실패할 수 있다. Antigravity CLI(`agy`)는 공식 설치 스크립트가 설치한 단일 바이너리를 삭제하며, Windows에서는 `agy update`의 백업 파일이 남는 `%LOCALAPPDATA%\agy` 디렉터리를 함께 삭제한다. 판별되지 않는 설치는 사유를 표시한다. 프로그램 삭제가 실패하면 설정 삭제를 진행하지 않는다. 설정 삭제 대상 경로는 확인 창에 표시하며, 설정 디렉터리가 심볼릭 링크이면 링크만 삭제한다.
+삭제는 실제 설치 경로에서 npm/Bun/Homebrew를 판별하여 해당 패키지 관리자를 사용한다. 기본 경로의 Claude·OpenCode·Hermes 네이티브 설치와 `~/.local/bin`의 독립 실행 바이너리도 지원한다. Hermes 공식 설치 스크립트 설치는 실행 파일(Unix는 `~/.local/bin/hermes` 셸 shim 또는 구버전 심볼릭 링크, Windows는 `venv\Scripts\hermes.exe`)이 가리키는 `hermes-agent` 체크아웃 디렉터리(기본 위치는 `$HERMES_HOME` 아래, Windows 기본값 `%LOCALAPPDATA%\hermes`, root FHS 설치는 `/usr/local/lib`)와 shim을 삭제한다. Windows에서는 삭제한 디렉터리를 가리키는 사용자 PATH 항목을 레지스트리에서 제거하고, 설정까지 삭제하면 `HERMES_HOME` 환경 변수도 제거한다. Codex 공식 설치 스크립트 설치는 `~/.local/bin/codex` 링크(macOS는 `codex-code-mode-host` 링크 포함)와 `~/.codex/packages`의 `standalone`·`app-server-daemon` 패키지를 삭제한다. 이때 실행 중인 app-server 데몬 프로세스는 종료하지 않으므로, Windows에서 데몬이 실행 중이면 파일 잠금으로 삭제가 실패할 수 있다. Antigravity CLI(`agy`)는 공식 설치 스크립트가 설치한 단일 바이너리를 삭제하며, Windows에서는 `agy update`의 백업 파일이 남는 `%LOCALAPPDATA%\agy` 디렉터리를 함께 삭제한다. 판별되지 않는 설치는 사유를 표시한다. 프로그램 삭제가 실패하면 설정 삭제를 진행하지 않는다. 설정 삭제 대상 경로는 확인 창에 표시하며, 설정 디렉터리가 심볼릭 링크이면 링크만 삭제한다.
 
 ## 표시 정보
 
@@ -97,7 +97,7 @@ agents-status
 | Pi | 설정 또는 인증 프로바이더 | `pi update --self` |
 | Antigravity | Google 고정 | `agy update`(Windows `agy.exe` 포함), 그 외 npm/Bun/Homebrew 설치 판별 |
 | Crush | `~/.local/share/crush/crush.json` | npm/Bun/Homebrew 설치 판별 |
-| Hermes | `~/.hermes/config.yaml` | `hermes update --yes` |
+| Hermes | `$HERMES_HOME/config.yaml`(기본값은 Windows `%LOCALAPPDATA%\hermes`, 그 외 `~/.hermes`) | `hermes update --yes` |
 | OpenClaw | `~/.openclaw/openclaw.json` | `openclaw update --yes` |
 
 Codex는 공식 설치 스크립트(`curl https://chatgpt.com/codex/install.sh | sh`)가 `~/.codex/packages/standalone`에 설치한 경우 `codex update`로 자체 업데이트한다. 이 명령은 같은 설치 스크립트를 비대화형으로 다시 실행한다. 그 외에는 실행 파일의 실제 경로에서 npm 또는 Homebrew 설치임이 확인된 경우에만 업데이트한다. Crush와 Gemini CLI(`gemini`로 감지된 경우)는 심볼릭 링크의 실제 경로와 패키지 정보를 이용해 npm/Bun/Homebrew 설치를 판별한다. npm은 원래 설치된 prefix의 npm을 사용하고 동일한 prefix에 업데이트한다. Homebrew는 실제 Cellar/Caskroom 경로의 패키지명을 사용한다. 설치 방식을 판별할 수 없거나 해당 설치의 패키지 관리자가 없으면 경로와 사유를 안내한다.
