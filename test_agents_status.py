@@ -12,7 +12,7 @@ from unittest.mock import AsyncMock, patch
 from rich.text import Text
 from textual.widgets import Button, DataTable, RichLog
 
-from agents_status.app import AgentsStatusApp, ConfirmDelete, ConfirmUpdate
+from agents_status.app import AgentsStatusApp, ConfirmDelete, ConfirmUpdate, platform_name
 from agents_status.core import (
     AGENTS, AgentStatus, CommandResult, StatusKind, UninstallPlan, UpdateCommand,
     config_paths, install_command, run_uninstall, run_update, scan_agent, uninstall_plan, update_command,
@@ -259,6 +259,17 @@ class UpdateTests(unittest.TestCase):
 
 
 class AppTests(unittest.IsolatedAsyncioTestCase):
+    async def test_header_shows_title_and_platform(self):
+        self.assertEqual(AgentsStatusApp.TITLE, "AI 코딩 에이전트 상태 조회 및 설치 관리")
+        self.assertEqual(AgentsStatusApp.SUB_TITLE, platform_name())
+        for system, version, expected in (("Windows", "", "Windows"), ("Darwin", "", "macOS"), ("Linux", "Linux version 6.6", "Linux"), ("Linux", "5.15.0-microsoft-standard-WSL2", "Linux (WSL)")):
+            with self.subTest(system=system), patch("platform.system", return_value=system), patch("agents_status.app.Path.read_text", return_value=version):
+                self.assertEqual(platform_name(), expected)
+        app = AgentsStatusApp()
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.pause()
+            self.assertEqual((app.title, app.sub_title), (AgentsStatusApp.TITLE, platform_name()))
+
     async def test_selection_changes_install_label_and_command(self):
         statuses = [AgentStatus(SPECS[key], kind, executable, "-", "-") for key, kind, executable in (
             ("pi", StatusKind.INSTALLED, Path("/bin/pi")),

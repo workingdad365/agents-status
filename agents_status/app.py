@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from pathlib import Path
+import platform
+
 from rich.cells import get_character_cell_size
 from rich.text import Text
 from textual import events, on, work
@@ -137,9 +140,22 @@ class ConfirmDelete(ModalScreen[bool | None]):
         self.dismiss({"delete-config": True, "keep-config": False}.get(event.button.id))
 
 
+def platform_name() -> str:
+    """헤더에 표시할 실행 환경 이름(Windows, Linux, Linux (WSL), macOS)."""
+    system = platform.system()
+    if system == "Linux":
+        try:
+            if "microsoft" in Path("/proc/version").read_text(encoding="utf-8", errors="replace").lower():
+                return "Linux (WSL)"
+        except OSError:
+            pass
+        return "Linux"
+    return {"Windows": "Windows", "Darwin": "macOS"}.get(system, system or "unknown")
+
+
 class AgentsStatusApp(App[None]):
-    TITLE = "Agents Status"
-    SUB_TITLE = "AI 코딩 에이전트 상태 및 업데이트"
+    TITLE = "AI 코딩 에이전트 상태 조회 및 설치 관리"
+    SUB_TITLE = platform_name()
     CSS = """
     Screen { layout: vertical; }
     #summary { height: 3; padding: 1 2; background: $boost; }
