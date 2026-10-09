@@ -17,10 +17,19 @@ from agents_status.core import (
     AGENTS, AgentStatus, CommandResult, StatusKind, UninstallPlan, UpdateCommand,
     config_paths, install_command, run_uninstall, run_update, scan_agent, uninstall_plan, update_command,
 )
-from agents_status.core import _clean_user_environment
+from agents_status.core import _clean_user_environment, _version
 
 
 SPECS = {spec.key: spec for spec in AGENTS}
+
+
+def symlink_or_skip(link: Path, target: Path) -> None:
+    try:
+        link.symlink_to(target, target_is_directory=target.is_dir())
+    except OSError as error:
+        if sys.platform == "win32" and error.winerror == 1314:
+            raise unittest.SkipTest("Windows 심볼릭 링크 생성 권한이 없음") from error
+        raise
 
 
 class LauncherTests(unittest.TestCase):
@@ -146,6 +155,38 @@ class ProviderTests(unittest.TestCase):
             self.assertEqual(status.status, StatusKind.MISSING)
 
 
+class VersionTests(unittest.TestCase):
+    def test_version_strips_terminal_sequences_and_skips_empty_lines(self):
+        cases = (
+            ("\x1b[?25l\r\n\x1b[1;36m12.3.4\x1b[0m\x1b[?25h\n", "12.3.4"),
+            ("\x1b]0;OMP\x07\x1b]11;?\x1b\\\n12.3.4\n", "12.3.4"),
+            ("\x1b]8;;https://example.com\x1b\\12.3.4\x1b]8;;\x1b\\", "12.3.4"),
+            ("\x9d0;OMP\x9c\x9b32m12.3.4\x9b0m", "12.3.4"),
+            ("\x1b(B\x00\x0712.3.4\x7f", "12.3.4"),
+            ("\n  2.1.295 (Claude Code)\r\n", "2.1.295 (Claude Code)"),
+            ("\x1b[32m" + "1" * 100 + "\x1b[0m", "1" * 80),
+            ("\x1b[?25h\n\x1b[0m", "조회 실패"),
+        )
+        for output, expected in cases:
+            for stream in ("stdout", "stderr"):
+                with self.subTest(output=repr(output), stream=stream):
+                    result = subprocess.CompletedProcess([], 0, **{
+                        "stdout": output if stream == "stdout" else "",
+                        "stderr": output if stream == "stderr" else "",
+                    })
+                    with patch("agents_status.core.subprocess.run", return_value=result):
+                        self.assertEqual(_version(Path("omp.cmd"), ("--version",)), expected)
+
+    def test_failed_version_does_not_display_error_as_version(self):
+        result = subprocess.CompletedProcess([], 1, "12.3.4\n", "'bun' is not recognized\ufffd\n")
+        with patch("agents_status.core.subprocess.run", return_value=result):
+            self.assertEqual(_version(Path("omp.cmd"), ("--version",)), "조회 실패")
+
+    def test_version_cleans_real_subprocess_output(self):
+        script = "import sys; sys.stdout.write('\\x1b]0;OMP\\x07\\n\\x1b[32m12.3.4\\x1b[0m\\n')"
+        self.assertEqual(_version(Path(sys.executable), ("-c", script)), "12.3.4")
+
+
 class UpdateTests(unittest.TestCase):
     def test_self_update_uses_discovered_executable(self):
         status = AgentStatus(SPECS["opencode"], StatusKind.INSTALLED, Path("/opt/bin/opencode"), "1.0", "openai")
@@ -176,10 +217,10 @@ class UpdateTests(unittest.TestCase):
             (release / "bin").mkdir(parents=True)
             (release / "bin/codex").touch()
             current = home / ".codex/packages/standalone/current"
-            current.symlink_to(release)
+            symlink_or_skip(current, release)
             executable = home / ".local/bin/codex"
             executable.parent.mkdir(parents=True)
-            executable.symlink_to(current / "bin/codex")
+            symlink_or_skip(executable, current / "bin/codex")
             status = AgentStatus(SPECS["codex"], StatusKind.INSTALLED, executable, "codex-cli 0.162.0", "openai")
             command, _ = update_command(status, home=home)
             self.assertEqual(command.argv, (str(executable), "update"))
@@ -215,7 +256,7 @@ class UpdateTests(unittest.TestCase):
                     target = root / binary
                     target.touch()
                     executable = prefix / "bin" / binary
-                    executable.symlink_to(target)
+                    symlink_or_skip(executable, target)
                     status = AgentStatus(SPECS[key], StatusKind.INSTALLED, executable, "1.0", "unknown")
                     with patch("shutil.which", return_value="/different/installation/bin/npm"):
                         command, reason = update_command(status)
@@ -421,8 +462,12 @@ class WorkingDirectoryTests(unittest.IsolatedAsyncioTestCase):
             scratch = Path(directory, "scratch")
             for folder in (home, bin_dir, scratch):
                 folder.mkdir()
-            probe = bin_dir / "copilot"
-            probe.write_text(f"#!{sys.executable}\nimport os\nprint(os.getcwd())\n", encoding="utf-8")
+            if sys.platform == "win32":
+                probe = bin_dir / "copilot.cmd"
+                probe.write_text("@echo off\ncd\n", encoding="utf-8")
+            else:
+                probe = bin_dir / "copilot"
+                probe.write_text(f"#!{sys.executable}\nimport os\nprint(os.getcwd())\n", encoding="utf-8")
             probe.chmod(0o755)
             scanned = scan_agent(SPECS["copilot"], home=home, env={}, path=str(bin_dir))
             self.assertEqual(scanned.version, str(home))
@@ -450,7 +495,7 @@ class UninstallTests(unittest.IsolatedAsyncioTestCase):
             target.mkdir()
             (target / "keep").touch()
             config = root / ".codex"
-            config.symlink_to(target)
+            symlink_or_skip(config, target)
             result = await run_uninstall(UninstallPlan(), (config,))
             self.assertEqual(result.returncode, 0)
             self.assertFalse(config.is_symlink())
@@ -469,7 +514,7 @@ class UninstallTests(unittest.IsolatedAsyncioTestCase):
                 target = root / "codex"
                 target.touch()
                 executable = prefix / "bin/codex"
-                executable.symlink_to(target)
+                symlink_or_skip(executable, target)
                 status = AgentStatus(SPECS["codex"], StatusKind.INSTALLED, executable, "1.0", "openai")
                 plan, reason = uninstall_plan(status)
                 self.assertEqual(reason, "")
@@ -494,7 +539,7 @@ class UninstallTests(unittest.IsolatedAsyncioTestCase):
             binary.touch()
             executable = home / ".local/bin/claude"
             executable.parent.mkdir()
-            executable.symlink_to(binary)
+            symlink_or_skip(executable, binary)
             config = home / ".claude"
             config.mkdir()
             status = AgentStatus(SPECS["claude"], StatusKind.INSTALLED, executable, "1", "-")
@@ -505,6 +550,54 @@ class UninstallTests(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(executable.is_symlink())
             self.assertTrue(config.exists())
 
+    async def test_windows_native_claude_uninstall_preserves_config_and_shared_bin(self):
+        for name in ("claude.exe", "claude.EXE"):
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as directory:
+                home = Path(directory)
+                root = home / ".local/share/claude"
+                (root / "versions").mkdir(parents=True)
+                (root / "versions/2.1.295").write_bytes(b"MZ\x90\x00")
+                executable = home / ".local/bin" / name
+                executable.parent.mkdir(parents=True)
+                executable.write_bytes(b"MZ\x90\x00")
+                other = executable.with_name("other.exe")
+                other.touch()
+                config = home / ".claude/settings.json"
+                config.parent.mkdir()
+                config.write_text("{}")
+                state = home / ".claude.json"
+                state.write_text("{}")
+                status = AgentStatus(SPECS["claude"], StatusKind.INSTALLED, executable, "2.1.295", "anthropic")
+                plan, reason = uninstall_plan(status, home=home)
+                self.assertEqual(reason, "")
+                self.assertIsNone(plan.command)
+                self.assertEqual(plan.paths, (executable, root))
+                with patch("agents_status.core._clean_user_environment", return_value=[]):
+                    result = await run_uninstall(plan)
+                self.assertEqual(result.returncode, 0, result.output)
+                self.assertFalse(executable.exists())
+                self.assertFalse(root.exists())
+                self.assertTrue(other.exists())
+                self.assertEqual(config.read_text(), "{}")
+                self.assertEqual(state.read_text(), "{}")
+
+    async def test_windows_claude_requires_native_binary_in_expected_directory(self):
+        for location, contents in (
+            (".local/bin/claude.exe", b"@echo off"),
+            (".local/bin/claude.cmd", b"@echo off"),
+            ("custom/claude.exe", b"MZ\x90\x00"),
+        ):
+            with self.subTest(location=location), tempfile.TemporaryDirectory() as directory:
+                home = Path(directory)
+                executable = home / location
+                executable.parent.mkdir(parents=True)
+                executable.write_bytes(contents)
+                status = AgentStatus(SPECS["claude"], StatusKind.INSTALLED, executable, "1", "-")
+                plan, reason = uninstall_plan(status, home=home)
+                self.assertIsNone(plan)
+                self.assertIn("판별하지 못했습니다", reason)
+                self.assertTrue(executable.exists())
+
     async def test_codex_standalone_uninstall_removes_packages_and_links(self):
         with tempfile.TemporaryDirectory() as directory:
             home = Path(directory)
@@ -514,13 +607,13 @@ class UninstallTests(unittest.IsolatedAsyncioTestCase):
             (release / "bin/codex").touch()
             (release / "bin/codex-code-mode-host").touch()
             current = packages / "standalone/current"
-            current.symlink_to(release)
+            symlink_or_skip(current, release)
             (packages / "app-server-daemon/releases").mkdir(parents=True)
             executable = home / ".local/bin/codex"
             executable.parent.mkdir(parents=True)
-            executable.symlink_to(current / "bin/codex")
+            symlink_or_skip(executable, current / "bin/codex")
             host = home / ".local/bin/codex-code-mode-host"
-            host.symlink_to(current / "bin/codex-code-mode-host")
+            symlink_or_skip(host, current / "bin/codex-code-mode-host")
             unrelated = home / ".local/bin/other"
             unrelated.touch()
             config = home / ".codex/config.toml"
@@ -611,10 +704,7 @@ class UninstallTests(unittest.IsolatedAsyncioTestCase):
             target.touch()
             wrapper = home / ".local/bin/hermes"
             wrapper.parent.mkdir(parents=True)
-            try:
-                wrapper.symlink_to(target)
-            except OSError:
-                self.skipTest("이 환경에서는 심볼릭 링크를 만들 수 없음")
+            symlink_or_skip(wrapper, target)
             status = AgentStatus(SPECS["hermes"], StatusKind.INSTALLED, wrapper, "Hermes Agent v0.18.2", "openai")
             with patch.dict(os.environ, {"HERMES_HOME": ""}), patch("agents_status.core.sys.platform", "linux"):
                 plan, reason = uninstall_plan(status, home=home)

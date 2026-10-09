@@ -71,6 +71,8 @@ agents-status
 
 삭제는 실제 설치 경로에서 npm/Bun/Homebrew를 판별하여 해당 패키지 관리자를 사용한다. 기본 경로의 Claude·OpenCode·Hermes 네이티브 설치와 `~/.local/bin`의 독립 실행 바이너리도 지원한다. Hermes 공식 설치 스크립트 설치는 실행 파일(Unix는 `~/.local/bin/hermes` 셸 shim 또는 구버전 심볼릭 링크, Windows는 `venv\Scripts\hermes.exe`)이 가리키는 `hermes-agent` 체크아웃 디렉터리(기본 위치는 `$HERMES_HOME` 아래, Windows 기본값 `%LOCALAPPDATA%\hermes`, root FHS 설치는 `/usr/local/lib`)와 shim을 삭제한다. Windows에서는 삭제한 디렉터리를 가리키는 사용자 PATH 항목을 레지스트리에서 제거하고, 설정까지 삭제하면 `HERMES_HOME` 환경 변수도 제거한다. Codex 공식 설치 스크립트 설치는 `~/.local/bin/codex` 링크(macOS는 `codex-code-mode-host` 링크 포함)와 `~/.codex/packages`의 `standalone`·`app-server-daemon` 패키지를 삭제한다. 이때 실행 중인 app-server 데몬 프로세스는 종료하지 않으므로, Windows에서 데몬이 실행 중이면 파일 잠금으로 삭제가 실패할 수 있다. Antigravity CLI(`agy`)는 공식 설치 스크립트가 설치한 단일 바이너리를 삭제하며, Windows에서는 `agy update`의 백업 파일이 남는 `%LOCALAPPDATA%\agy` 디렉터리를 함께 삭제한다. 판별되지 않는 설치는 사유를 표시한다. 프로그램 삭제가 실패하면 설정 삭제를 진행하지 않는다. 설정 삭제 대상 경로는 확인 창에 표시하며, 설정 디렉터리가 심볼릭 링크이면 링크만 삭제한다.
 
+Windows의 Claude Code 네이티브 설치는 [공식 제거 경로](https://code.claude.com/docs/en/setup#native-installation)에 따라 `%USERPROFILE%\.local\bin\claude.exe`와 `%USERPROFILE%\.local\share\claude`의 버전 파일을 삭제합니다. 실행 파일의 PE 형식을 확인하며, `N`을 선택하면 `.claude`와 `.claude.json` 설정을 보존합니다. 다른 도구가 함께 사용하는 `.local\bin` 디렉터리와 해당 PATH 항목도 보존합니다.
+
 ## 표시 정보
 
 | 열 | 설명 |
@@ -81,7 +83,7 @@ agents-status
 | 프로바이더 | 설정에서 확인한 현재 LLM 프로바이더 |
 | 실행 파일 | PATH에서 발견한 실제 실행 파일 경로 |
 
-버전 조회는 각 에이전트에 대해 병렬로 실행되며, 응답하지 않는 명령은 60초 후 `조회 실패`로 표시됩니다.
+버전 조회는 각 에이전트에 대해 병렬로 실행됩니다. 출력의 ANSI 색상·커서·창 제목 등 터미널 제어문자를 제거하고 첫 번째 비어 있지 않은 줄을 표시합니다. 실행 오류(예: OMP 실행에 필요한 Bun이 PATH에 없음), 빈 출력 또는 60초 시간 초과는 `조회 실패`로 표시합니다.
 
 ## 지원 에이전트
 

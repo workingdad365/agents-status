@@ -268,6 +268,14 @@ def _config_root(spec: AgentSpec, home: Path, env: Mapping[str, str] | None = No
     return home / spec.config_root
 
 
+_TERMINAL_ESCAPE = re.compile(
+    # OSC(창 제목·하이퍼링크 등), CSI(색상·커서 등), 그 외 ESC 시퀀스.
+    r"(?:\x1b\]|\x9d)[^\x07\x1b\x9c]*(?:\x07|\x1b\\|\x9c)"
+    r"|(?:\x1b\[|\x9b)[0-?]*[ -/]*[@-~]"
+    r"|\x1b[ -/]*[@-~]"
+)
+
+
 def _version(executable: Path, args: Sequence[str], cwd: Path | str | None = None) -> str:
     try:
         result = subprocess.run(
@@ -278,7 +286,12 @@ def _version(executable: Path, args: Sequence[str], cwd: Path | str | None = Non
         )
     except (OSError, subprocess.TimeoutExpired):
         return "조회 실패"
-    lines = (result.stdout + "\n" + result.stderr).strip().splitlines()
+    if result.returncode:
+        return "조회 실패"
+    # NO_COLOR를 무시하는 CLI도 있으므로 표시 전에 터미널 제어문자를 제거함.
+    output = _TERMINAL_ESCAPE.sub("", result.stdout + "\n" + result.stderr)
+    output = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]", "", output)
+    lines = [line.strip() for line in output.splitlines() if line.strip()]
     return lines[0][:80] if lines else "조회 실패"
 
 
@@ -427,8 +440,17 @@ def uninstall_plan(status: AgentStatus, *, home: Path | None = None) -> tuple[Un
         return UninstallPlan(command), ""
     base = Path.home() if home is None else home
     resolved = executable.resolve()
-    if status.spec.key == "claude" and resolved.is_relative_to(base / ".local/share/claude"):
-        return UninstallPlan(paths=(executable, base / ".local/share/claude")), ""
+    if status.spec.key == "claude":
+        root = base / ".local/share/claude"
+        # Windows 네이티브 설치는 Unix의 심볼릭 링크 대신 bin에 PE 실행 파일을 둠.
+        windows_native = (
+            executable.parent == base / ".local/bin"
+            and executable.name.lower() == "claude.exe"
+            and not executable.is_symlink()
+            and _is_native_binary(executable, _PE_MAGIC)
+        )
+        if resolved.is_relative_to(root) or windows_native:
+            return UninstallPlan(paths=(executable, root)), ""
     if status.spec.key == "codex" and resolved.is_relative_to(_codex_packages(base) / "standalone"):
         # 공식 설치 스크립트는 ~/.local/bin/codex 링크(macOS는 codex-code-mode-host 링크 추가)와
         # ~/.codex/packages 아래 standalone·app-server-daemon 패키지를 설치함.
