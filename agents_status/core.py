@@ -88,6 +88,20 @@ def _json_string(path: Path, key: str) -> str:
     return match.group(1) if match else ""
 
 
+def _json_dependency(path: Path, package: str) -> bool:
+    """package.json의 dependencies 또는 devDependencies에 패키지가 등록되어 있는지 여부."""
+    try:
+        manifest = json.loads(_read(path))
+    except json.JSONDecodeError:
+        return False
+    if not isinstance(manifest, dict):
+        return False
+    return any(
+        isinstance(section := manifest.get(key), dict) and package in section
+        for key in ("dependencies", "devDependencies")
+    )
+
+
 def _provider_of(reference: str) -> str:
     return reference.partition("/")[0]
 
@@ -477,6 +491,13 @@ def _package_update(executable: Path, packages: tuple[str, ...], *, uninstall: b
             if bun:
                 argv = (str(bun), "remove" if uninstall else "add", "--global", package if uninstall else f"{package}@latest")
                 return UpdateCommand(argv, " ".join(argv))
+        # Bun은 전역 디렉터리(~/.bun/install/global)에 package.json이 없으면 상위 디렉터리에서 package.json을
+        # 찾아 그곳(예: ~/package.json이 있는 홈 디렉터리)을 전역 프로젝트로 삼으므로, bun과 같은 bin 디렉터리에
+        # 둔 전역 링크가 전역 프로젝트의 의존성으로 등록된 패키지를 가리키면 Bun 전역 설치로 판별함.
+        bun = _tool(executable.parent, "bun")
+        if bun and _json_dependency(modules.parent / "package.json", package):
+            argv = (str(bun), "remove" if uninstall else "add", "--global", package if uninstall else f"{package}@latest")
+            return UpdateCommand(argv, " ".join(argv))
     # Windows npm 전역 설치는 prefix 디렉터리에 <이름>.cmd shim과 node_modules를 두므로 shim 위치로 판별함.
     prefix = executable.parent
     for package in packages:
@@ -531,8 +552,13 @@ def _winget_package_directory(resolved: Path, packages: Path) -> str:
     if resolved.parent != packages.parent / "Links" or not packages.is_dir():
         return ""
     # 자체 업데이트(copilot update 등)가 Links의 심볼릭 링크를 실제 파일로 바꾼 경우 패키지 디렉터리에서
-    # 같은 이름의 실행 파일을 찾아 대응함.
-    matches = [entry.name for entry in packages.iterdir() if entry.is_dir() and (entry / resolved.name).is_file()]
+    # 같은 이름의 실행 파일을 찾아 대응함. Windows 파일 이름은 대소문자를 구분하지 않으므로(copilot.EXE 등)
+    # 이름을 소문자로 비교함.
+    name = resolved.name.lower()
+    matches = [
+        entry.name for entry in packages.iterdir()
+        if entry.is_dir() and any(child.name.lower() == name and child.is_file() for child in entry.iterdir())
+    ]
     return matches[0] if len(matches) == 1 else ""
 
 
@@ -561,7 +587,10 @@ def _winget_uninstall(resolved: Path, base: Path) -> tuple[UninstallPlan | None,
         argv = (winget, "uninstall", "--id", identifier, "--exact", "--purge", "--force", "--disable-interactivity", "--accept-source-agreements")
         paths: tuple[Path, ...] = ()
         if resolved.parent == root.parent / "Links" and not resolved.is_symlink():
-            paths = (resolved, *sorted(resolved.parent.glob(f"{resolved.name}.old*")))
+            # 백업 이름(copilot.exe.old-<pid>-<time>)은 실행 파일 이름(copilot.EXE 등)과 대소문자가 다를 수 있음.
+            prefix = f"{resolved.name.lower()}.old"
+            backups = sorted(child for child in resolved.parent.iterdir() if child.name.lower().startswith(prefix) and child.is_file())
+            paths = (resolved, *backups)
         return UninstallPlan(UpdateCommand(argv, " ".join(argv)), paths=paths), ""
     return None, ""
 

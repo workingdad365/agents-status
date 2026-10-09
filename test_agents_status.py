@@ -1168,6 +1168,33 @@ class UninstallTests(unittest.IsolatedAsyncioTestCase):
             self.assertIsNone(plan)
             self.assertIn("판별하지 못했습니다", reason)
 
+    async def test_bun_global_install_rooted_at_ancestor_package_json(self):
+        # Bun은 ~/.bun/install/global에 package.json이 없으면 상위에서 package.json을 찾아 그곳(예: 홈)을 전역
+        # 프로젝트로 삼고, 링크는 여전히 ~/.bun/bin에 둠.
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            bun_home = home / ".bun"
+            (bun_home / "bin").mkdir(parents=True)
+            (bun_home / "install/global").mkdir(parents=True)
+            bun = bun_home / "bin/bun"
+            bun.touch()
+            root = home / "node_modules/@oh-my-pi/pi-coding-agent"
+            (root / "dist").mkdir(parents=True)
+            (root / "package.json").write_text('{"name":"@oh-my-pi/pi-coding-agent"}')
+            (root / "dist/cli.js").touch()
+            executable = bun_home / "bin/omp"
+            symlink_or_skip(executable, root / "dist/cli.js")
+            status = AgentStatus(SPECS["omp"], StatusKind.INSTALLED, executable, "18.0.4", "openai")
+            # 전역 프로젝트의 package.json에 의존성으로 등록되지 않았다면 Bun 전역 설치로 보지 않음.
+            plan, reason = uninstall_plan(status, home=home)
+            self.assertIsNone(plan)
+            self.assertIn("판별하지 못했습니다", reason)
+            (home / "package.json").write_text('{"dependencies":{"@oh-my-pi/pi-coding-agent":"^18.0.4"}}')
+            plan, reason = uninstall_plan(status, home=home)
+            self.assertEqual(reason, "")
+            self.assertEqual(plan.command.argv, (str(bun), "remove", "--global", "@oh-my-pi/pi-coding-agent"))
+            self.assertEqual(plan.paths, ())
+
     async def test_windows_bun_shim_uninstall_follows_bunx_sidecar(self):
         # Bun은 Windows에서 ~/.bun/bin/<이름>.exe shim과 대상 경로를 UTF-16으로 담은 <이름>.bunx를 둠.
         with tempfile.TemporaryDirectory() as directory:
