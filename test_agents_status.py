@@ -817,12 +817,36 @@ class UninstallTests(unittest.IsolatedAsyncioTestCase):
             executable.write_bytes(b"MZ")
             relative = PureWindowsPath("install/global/node_modules/@opencode/cli/bin/opencode.exe")
             (bun_home / "bin/opencode.bunx").write_bytes(f'{relative}"'.encode("utf-16-le") + b"\x00\x000\xab")
+            shutil.copy(executable, bun_home / "bin/opencode2.exe")
+            shutil.copy(bun_home / "bin/opencode.bunx", bun_home / "bin/opencode2.bunx")
+            (bun_home / "bin/other.exe").write_bytes(b"MZ")
+            (bun_home / "bin/other.bunx").write_bytes(f'{PureWindowsPath("install/global/node_modules/other/bin/other.exe")}"'.encode("utf-16-le"))
+            shims = tuple(bun_home / "bin" / name for name in ("opencode.exe", "opencode.bunx", "opencode2.exe", "opencode2.bunx"))
             status = AgentStatus(SPECS["opencode"], StatusKind.INSTALLED, executable, "2.0.24", "openai")
             with patch("shutil.which", return_value=None):
                 plan, reason = uninstall_plan(status, home=home)
             self.assertEqual(reason, "")
             self.assertEqual(plan.command.argv, (str(bun_home / "bin/bun.exe"), "remove", "--global", "@opencode/cli"))
+            # bun remove --global은 Windows에서 shim을 남기므로 같은 패키지의 shim을 함께 삭제함.
+            self.assertEqual(plan.paths, shims)
+            self.assertTrue(plan.display.startswith(plan.command.display))
+            self.assertIn("opencode2.bunx", plan.display)
 
+            # 패키지가 이미 지워져 shim만 남은 경우에는 shim만 삭제함.
+            shutil.rmtree(root)
+            with patch("shutil.which", return_value=None):
+                plan, reason = uninstall_plan(status, home=home)
+            self.assertEqual(reason, "")
+            self.assertIsNone(plan.command)
+            self.assertEqual(plan.paths, shims)
+            with patch("agents_status.core._clean_user_environment", return_value=[]):
+                result = await run_uninstall(plan)
+            self.assertEqual(result.returncode, 0)
+            self.assertFalse(any(shim.exists() for shim in shims))
+            self.assertTrue((bun_home / "bin/other.exe").exists())
+            self.assertTrue((bun_home / "bin/bun.exe").exists())
+
+            executable.write_bytes(b"MZ")
             (bun_home / "bin/opencode.bunx").write_bytes(b"\x00\x00")
             with patch("shutil.which", return_value=None):
                 plan, reason = uninstall_plan(status, home=home)

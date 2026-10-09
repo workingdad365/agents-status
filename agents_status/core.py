@@ -66,14 +66,12 @@ class UninstallPlan:
 
     @property
     def display(self) -> str:
-        if self.command:
-            return self.command.display
-        if not self.paths:
-            return "설치된 프로그램 없음"
-        text = "삭제: " + ", ".join(map(str, self.paths))
-        if sys.platform == "win32":
-            text += "\n정리: 삭제한 경로를 가리키는 사용자 PATH 항목" + "".join(f", {name}" for name in self.variables)
-        return text
+        lines = [self.command.display] if self.command else []
+        if self.paths:
+            lines.append("삭제: " + ", ".join(map(str, self.paths)))
+            if sys.platform == "win32":
+                lines.append("정리: 삭제한 경로를 가리키는 사용자 PATH 항목" + "".join(f", {name}" for name in self.variables))
+        return "\n".join(lines) if lines else "설치된 프로그램 없음"
 
 
 def _read(path: Path) -> str:
@@ -347,22 +345,58 @@ def _tool(directory: Path, name: str) -> Path | None:
     return None
 
 
-def _shim_target(executable: Path) -> Path:
-    """실행 파일이 가리키는 실제 경로. 심볼릭 링크 외에 Bun의 Windows shim도 따라감.
+def _bunx_target(executable: Path) -> Path | None:
+    """Bun의 Windows shim이 가리키는 경로. shim이 아니면 None.
 
     Bun은 Windows에서 심볼릭 링크 대신 bin 디렉터리에 <이름>.exe shim을 두고, 같은 이름의 .bunx 파일에
     대상 경로(bin의 상위 디렉터리 기준 상대 경로, UTF-16, 큰따옴표로 끝남)를 기록함.
     """
     sidecar = executable.with_suffix(".bunx")
-    if sidecar.is_file():
-        try:
-            text = sidecar.read_bytes().decode("utf-16-le", errors="ignore")
-        except OSError:
-            text = ""
-        target, quote, _ = text.partition('"')
-        if quote and target:
-            return Path(executable.parent.parent, *PureWindowsPath(target).parts).resolve()
-    return executable.resolve()
+    if not sidecar.is_file():
+        return None
+    try:
+        text = sidecar.read_bytes().decode("utf-16-le", errors="ignore")
+    except OSError:
+        return None
+    target, quote, _ = text.partition('"')
+    if not (quote and target):
+        return None
+    return Path(executable.parent.parent, *PureWindowsPath(target).parts).resolve()
+
+
+def _shim_target(executable: Path) -> Path:
+    """실행 파일이 가리키는 실제 경로. 심볼릭 링크 외에 Bun의 Windows shim도 따라감."""
+    return _bunx_target(executable) or executable.resolve()
+
+
+def _bun_shim_package(executable: Path) -> tuple[str, Path] | None:
+    """Bun Windows shim이 가리키는 패키지 이름과 패키지 디렉터리."""
+    target = _bunx_target(executable)
+    if target is None or "node_modules" not in target.parts:
+        return None
+    parts = target.parts
+    index = len(parts) - 1 - parts[::-1].index("node_modules")
+    count = 2 if index + 1 < len(parts) and parts[index + 1].startswith("@") else 1
+    names = parts[index + 1 : index + 1 + count]
+    if len(names) < count:
+        return None
+    return "/".join(names), Path(*parts[: index + 1 + count])
+
+
+def _bun_shims(executable: Path) -> tuple[Path, ...]:
+    """같은 패키지를 가리키는 Bun Windows shim(.exe와 .bunx) 전체.
+
+    bun remove --global은 Windows에서 패키지만 지우고 bin의 shim을 남기므로 함께 삭제함.
+    """
+    package = _bun_shim_package(executable)
+    if package is None:
+        return ()
+    shims: list[Path] = []
+    for sidecar in sorted(executable.parent.glob("*.bunx")):
+        shim = sidecar.with_suffix(executable.suffix)
+        if (shim == executable or _bun_shim_package(shim) == package) and shim.is_file():
+            shims.extend((shim, sidecar))
+    return tuple(shims)
 
 
 def _package_update(executable: Path, packages: tuple[str, ...], *, uninstall: bool = False) -> UpdateCommand | None:
@@ -523,9 +557,14 @@ def uninstall_plan(status: AgentStatus, *, home: Path | None = None) -> tuple[Un
     if not status.executable:
         return UninstallPlan(), ""
     executable = status.executable
-    command = _package_update(executable, _package_names(status.spec.key), uninstall=True)
+    names = _package_names(status.spec.key)
+    command = _package_update(executable, names, uninstall=True)
+    shims = _bun_shims(executable)
     if command:
-        return UninstallPlan(command), ""
+        return UninstallPlan(command, paths=shims), ""
+    if shims and (package := _bun_shim_package(executable)) and package[0] in names:
+        # 패키지는 이미 지워지고 shim만 남은 경우(bun remove --global 이후).
+        return UninstallPlan(paths=shims), ""
     base = Path.home() if home is None else home
     resolved = executable.resolve()
     command, reason = _winget_uninstall(resolved, base)
