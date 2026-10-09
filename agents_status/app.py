@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import argparse
+import asyncio
 from pathlib import Path
 import platform
 
@@ -15,9 +17,10 @@ from textual.strip import Strip
 from textual.widgets import Button, DataTable, Footer, Header, Label, LoadingIndicator, RichLog, Static
 
 from .core import (
-    AgentStatus, StatusKind, UpdateCommand, UninstallPlan, config_paths,
+    AGENTS, AgentSpec, AgentStatus, StatusKind, UpdateCommand, UninstallPlan, config_paths,
     install_command, scan_agents, run_uninstall, run_update, uninstall_plan, update_command,
 )
+from .instructions import default_instructions_path, sync_instructions
 
 
 def _cell_to_index(text: str, cell: int) -> int:
@@ -162,6 +165,9 @@ class AgentsStatusApp(App[None]):
     DataTable { height: 1fr; }
     #actions { height: 3; padding: 0 1; align-vertical: middle; }
     #actions Button { margin-right: 1; }
+    #sync-actions { height: 3; padding: 0 1; align-vertical: middle; }
+    #sync-actions Button { margin-right: 1; }
+    #instructions-source { width: 1fr; height: 1; color: $text-muted; }
     #progress { display: none; width: 8; height: 1; }
     #activity { width: 1fr; height: 1; color: $text-muted; }
     RichLog { height: 9; border-top: solid $accent; padding: 0 1; }
@@ -175,10 +181,11 @@ class AgentsStatusApp(App[None]):
         Binding("Q,ㅂ", "quit", "종료", show=False),
     ]
 
-    def __init__(self) -> None:
+    def __init__(self, instructions_source: Path | None = None) -> None:
         super().__init__()
         self.statuses: list[AgentStatus] = []
         self.busy = False
+        self.instructions_source = (instructions_source if instructions_source is not None else default_instructions_path()).expanduser().resolve()
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -190,6 +197,12 @@ class AgentsStatusApp(App[None]):
             yield Button("삭제", id="delete", variant="error")
             yield LoadingIndicator(id="progress")
             yield Label("", id="activity")
+        with Horizontal(id="sync-actions"):
+            yield Button("지침 동기화", id="sync")
+            yield Button("전체 동기화", id="sync-all")
+            source = Label(Text(f"원본: {self.instructions_source}"), id="instructions-source")
+            source.tooltip = str(self.instructions_source)
+            yield source
         yield SelectableRichLog(id="log", highlight=True, markup=True)
         yield Footer()
 
@@ -256,6 +269,49 @@ class AgentsStatusApp(App[None]):
         button.label = operation
         button.disabled = disabled or status is None
         self.query_one("#delete", Button).disabled = disabled or status is None or status.status == StatusKind.MISSING
+        self.query_one("#sync", Button).disabled = disabled or status is None
+        self.query_one("#sync-all", Button).disabled = disabled
+
+    @on(Button.Pressed, "#sync")
+    def sync_pressed(self) -> None:
+        if not self.busy and (status := self._selected()) is not None:
+            self._start_sync((status.spec,))
+
+    @on(Button.Pressed, "#sync-all")
+    def sync_all_pressed(self) -> None:
+        if not self.busy:
+            self._start_sync(AGENTS)
+
+    def _start_sync(self, specs: tuple[AgentSpec, ...]) -> None:
+        self.busy = True
+        self._set_buttons(True)
+        self.sync_agents(specs)
+
+    @work(exclusive=True, group="update")
+    async def sync_agents(self, specs: tuple[AgentSpec, ...]) -> None:
+        log = self.query_one("#log", RichLog)
+        log.write(Text(f"지침 동기화 원본: {self.instructions_source}"))
+        self.query_one("#progress", LoadingIndicator).styles.display = "block"
+        self.query_one("#activity", Label).update("지침 동기화 진행 중…")
+        try:
+            results = await asyncio.to_thread(sync_instructions, self.instructions_source, specs)
+            for result in results:
+                detail = f" ({result.detail})" if result.detail else ""
+                log.write(Text(f"[{result.outcome}] {result.name}: {result.destination}{detail}"))
+            written = sum(result.outcome in ("copy", "merge") for result in results)
+            skipped = sum(result.outcome == "skip" for result in results)
+            failed = sum(result.outcome == "error" for result in results)
+            summary = f"지침 동기화: {written}개 작성, {skipped}개 건너뜀, {failed}개 실패"
+            log.write(Text(summary))
+            self.notify(summary, severity="error" if failed else "information")
+        except (OSError, UnicodeError, ValueError) as error:
+            log.write(Text(f"지침 동기화 실패: {error}"))
+            self.notify("지침 동기화에 실패했습니다. 원본 경로와 로그를 확인해 주세요.", severity="error")
+        finally:
+            self.query_one("#progress", LoadingIndicator).styles.display = "none"
+            self.query_one("#activity", Label).update("")
+            self.busy = False
+            self._set_buttons(False)
 
     @on(DataTable.RowHighlighted)
     def selection_changed(self) -> None:
@@ -363,7 +419,10 @@ class AgentsStatusApp(App[None]):
 
 
 def main() -> None:
-    AgentsStatusApp().run()
+    parser = argparse.ArgumentParser(description="AI 코딩 에이전트 상태 및 글로벌 지침 관리")
+    parser.add_argument("--instructions", type=Path, help="동기화할 글로벌 지침 원본 경로")
+    args = parser.parse_args()
+    AgentsStatusApp(instructions_source=args.instructions).run()
 
 
 if __name__ == "__main__":

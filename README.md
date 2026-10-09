@@ -1,6 +1,6 @@
 # agents-status
 
-여러 AI 코딩 에이전트의 설치 상태, 현재 버전, LLM 프로바이더를 한 화면에서 확인하고 개별 업데이트하는 Textual TUI입니다.
+여러 AI 코딩 에이전트의 설치 상태, 현재 버전, LLM 프로바이더를 한 화면에서 확인하고 개별 업데이트 및 글로벌 지침 동기화를 수행하는 Textual TUI임.
 
 ## 요구 사항
 
@@ -56,6 +56,8 @@ agents-status
 | `↑` / `↓` | 에이전트 선택 |
 | `U` / 설치·업데이트 버튼 | `미설치`·`설정만`이면 설치, `설치됨`이면 업데이트 |
 | 삭제 버튼 | 프로그램 삭제 및 설정 삭제 여부 선택 |
+| 지침 동기화 버튼 | 선택한 에이전트에 글로벌 지침 반영 |
+| 전체 동기화 버튼 | 지원하는 모든 에이전트에 글로벌 지침 반영 |
 | `R` | 설치 상태와 버전 새로고침 |
 | 마우스 드래그 | 하단 로그의 텍스트를 선택하고 버튼을 놓으면 클립보드에 복사 |
 | `Ctrl+C` | 선택한 텍스트를 다시 클립보드에 복사 (선택이 없으면 종료 안내) |
@@ -78,6 +80,42 @@ OMP의 npm 패키지(`@oh-my-pi/pi-coding-agent`)는 실행 파일이 `#!/usr/bi
 삭제는 실제 설치 경로에서 npm/Bun/Homebrew를 판별하여 해당 패키지 관리자를 사용한다. Windows에서는 심볼릭 링크 대신 shim을 두므로 Bun은 `%USERPROFILE%\.bun\bin\<이름>.bunx`에 기록된 대상 경로를, npm은 shim과 같은 디렉터리의 `node_modules\<패키지>`를 보고 판별한다. `bun remove --global`은 Windows에서 패키지만 지우고 `.bun\bin`의 `.exe`·`.bunx` shim을 남기므로, 같은 패키지를 가리키는 shim을 함께 삭제한다. 패키지는 이미 지워지고 shim만 남은 경우(`설치됨`이지만 버전이 `조회 실패`)에는 shim만 삭제한다. OpenCode는 npm 패키지 이름이 `opencode-ai`에서 `@opencode/cli`로, Pi는 `@mariozechner/pi-coding-agent`에서 `@earendil-works/pi-coding-agent`로 바뀌었으므로 두 이름 모두 판별한다(신규 설치는 새 이름을 사용한다). WinGet 이식 가능(portable) 패키지(예: `winget install GitHub.Copilot`)는 `%LOCALAPPDATA%\Microsoft\WinGet\Packages\<패키지 ID>_<원본>` 경로에서 패키지 ID를 읽어 `winget uninstall --id <ID> --exact --purge --force`로 삭제한다. `--force`는 `copilot update` 등 자체 업데이트로 파일 해시가 바뀐 경우를 위한 것이고, `--purge`는 백업 파일(`.old`)까지 지우기 위한 것이다. 기본 경로의 Claude·OpenCode·Hermes 네이티브 설치와 `~/.local/bin`의 독립 실행 바이너리도 지원한다. Hermes 공식 설치 스크립트 설치는 실행 파일(Unix는 `~/.local/bin/hermes` 셸 shim 또는 구버전 심볼릭 링크, Windows는 `venv\Scripts\hermes.exe`)이 가리키는 `hermes-agent` 체크아웃 디렉터리(기본 위치는 `$HERMES_HOME` 아래, Windows 기본값 `%LOCALAPPDATA%\hermes`, root FHS 설치는 `/usr/local/lib`)와 shim을 삭제한다. shim이 가리키는 진입점은 구버전 `venv/bin/hermes`와 최신 `.hermes/bin/hermes` 모두 인식하며, Unix에서는 같은 체크아웃을 가리키는 `hermes-agent`·`hermes-acp` shim도 함께 삭제한다. Kilo 공식 설치 스크립트 설치(`~/.kilo/bin/kilo`)는 tree-sitter 문법을 포함한 `~/.kilo/bin` 디렉터리를 삭제한다. OMP 공식 설치 스크립트의 단일 바이너리는 실행 파일을 삭제하며, Windows 기본 위치 `%LOCALAPPDATA%\omp`는 디렉터리째 삭제한다. Windows에서는 삭제한 디렉터리를 가리키는 사용자 PATH 항목을 레지스트리에서 제거하고, 설정까지 삭제하면 `HERMES_HOME` 환경 변수도 제거한다. Codex 공식 설치 스크립트 설치는 `~/.local/bin/codex` 링크(macOS는 `codex-code-mode-host` 링크 포함)와 `~/.codex/packages`의 `standalone`·`app-server-daemon` 패키지를 삭제한다. 이때 실행 중인 app-server 데몬 프로세스는 종료하지 않으므로, Windows에서 데몬이 실행 중이면 파일 잠금으로 삭제가 실패할 수 있다. Antigravity CLI(`agy`)는 공식 설치 스크립트가 설치한 단일 바이너리를 삭제하며, Windows에서는 `agy update`의 백업 파일이 남는 `%LOCALAPPDATA%\agy` 디렉터리를 함께 삭제한다. Pi 공식 설치 스크립트(`https://pi.dev/install.sh`, `install.ps1`)의 관리형 설치는 `~/.pi/agent/install`의 `managed-install.json`으로 판별하며, 설치 스크립트의 Uninstall Pi와 같이 진입점 링크(Unix의 `~/.local/bin/pi` 등 심볼릭 링크)·`~/.pi/agent/bin`의 런처(Unix는 `pi`, Windows는 `pi`·`pi.cmd`·`pi.ps1`·`pi-launcher.js`)·`install` 디렉터리를 삭제한다. `bin`에 Pi가 내려받은 `fd` 등 도구와 Windows 사용자 PATH의 `bin` 항목은 보존한다. 판별되지 않는 설치는 사유를 표시한다. 프로그램 삭제가 실패하면 설정 삭제를 진행하지 않는다. 설정 삭제 대상 경로는 확인 창에 표시하며, 설정 디렉터리가 심볼릭 링크이면 링크만 삭제한다.
 
 Windows의 Claude Code 네이티브 설치는 [공식 제거 경로](https://code.claude.com/docs/en/setup#native-installation)에 따라 `%USERPROFILE%\.local\bin\claude.exe`와 `%USERPROFILE%\.local\share\claude`의 버전 파일을 삭제합니다. 실행 파일의 PE 형식을 확인하며, `N`을 선택하면 `.claude`와 `.claude.json` 설정을 보존합니다. 다른 도구가 함께 사용하는 `.local\bin` 디렉터리와 해당 PATH 항목도 보존합니다.
+
+## 글로벌 지침 동기화
+
+`sync-instructions`의 동기화 기능을 Python으로 통합함. 기본 원본은 이 프로젝트의 `GLOBAL_INSTRUCTIONS.md`이며, 상위의 `sync-instructions` 디렉터리 없이 독립적으로 동작함. 일반 패키지 설치 시에는 패키지에 포함된 원본을 사용함. 사용 중인 원본 경로는 동기화 버튼 옆과 실행 로그에 표시함.
+
+다른 원본을 사용하려면 실행 시 `--instructions`로 지정함. 상대 경로는 실행한 작업 디렉터리를 기준으로 해석함.
+
+```bash
+uv run agents-status --instructions /path/to/GLOBAL_INSTRUCTIONS.md
+./agents_status.sh --instructions ../sync-instructions/GLOBAL_INSTRUCTIONS.md
+```
+
+```powershell
+.\agents_status.ps1 --instructions C:\path\to\GLOBAL_INSTRUCTIONS.md
+```
+
+버튼을 누르면 즉시 동기화하며, copy 대상 파일은 원본으로 덮어씀. 도구의 설정 디렉터리가 없으면 건너뜀. Crush는 데이터 디렉터리나 실행 파일만 있어도 설정 디렉터리를 생성하여 반영함. 원본을 읽을 수 없거나 내용이 비어 있으면 파일을 수정하지 않고 오류를 표시함. 개별 대상의 실패는 로그에 남기고 나머지 대상을 계속 처리함. 실행 중에는 설치·업데이트·삭제·동기화 버튼을 비활성화함.
+
+| 에이전트 | 대상 파일 | 방식 |
+|---|---|---|
+| Claude | `~/.claude/CLAUDE.md` | copy |
+| Codex CLI | `~/.codex/AGENTS.md` | copy |
+| Command Code | `~/.commandcode/AGENTS.md` | copy |
+| Copilot CLI | `~/.copilot/copilot-instructions.md` | copy |
+| OpenCode | `~/.config/opencode/AGENTS.md` | copy |
+| Kilo | `~/.config/kilo/AGENTS.md` | copy |
+| OMP | `~/.omp/agent/AGENTS.md` | copy |
+| Pi | `~/.pi/agent/AGENTS.md` | copy |
+| Antigravity | `~/.gemini/GEMINI.md` | copy |
+| Crush | `~/.config/crush/CRUSH.md` | copy |
+| Hermes | `~/.hermes/SOUL.md` | merge |
+| OpenClaw | `~/.openclaw/workspace/AGENTS.md` | merge |
+
+Crush는 `CRUSH_GLOBAL_CONFIG`·`CRUSH_GLOBAL_DATA`를 우선하고, 미지정 시 `XDG_CONFIG_HOME`·`XDG_DATA_HOME` 아래의 `crush` 디렉터리를 사용함. Hermes는 기존 상태 조회와 동일하게 `HERMES_HOME`을 우선하며, Windows 기본 경로는 `%LOCALAPPDATA%\hermes`임.
+
+merge 방식은 `<!-- GLOBAL_INSTRUCTIONS:BEGIN -->`과 `<!-- GLOBAL_INSTRUCTIONS:END -->` 사이만 교체하고 나머지 내용과 기존 개행 형식(LF/CRLF)을 보존함. 마커가 없으면 끝에 블록을 추가하고, 파일이 없으면 블록으로 새로 작성함. 첫 줄이 `# Global Instructions (ver.`로 시작하는 예전 copy 결과물은 블록 방식으로 전환함. 이때 Hermes는 `hermes-agent/SOUL.md`가 있으면 기본 내용으로 복원한 뒤 블록을 추가함. 불완전하거나 중복된 마커는 기존 파일을 보존하고 오류로 처리함.
 
 ## 표시 정보
 
@@ -125,8 +163,11 @@ uv run python -m unittest -v
 |---|---|
 | `agents_status/app.py` | Textual 화면과 사용자 동작 |
 | `agents_status/core.py` | 상태·버전 조사와 업데이트 실행 |
+| `agents_status/instructions.py` | 에이전트별 글로벌 지침 복사 및 블록 병합 |
+| `GLOBAL_INSTRUCTIONS.md` | 동기화할 글로벌 지침 원본 |
 | `agents_status.sh` | uv 기반 실행 진입점 |
 | `agents_status.ps1` | Windows PowerShell용 uv 기반 실행 진입점 |
 | `test_agents_status.py` | 회귀 테스트 |
+| `test_instructions.py` | 지침 동기화 및 버튼 동작 테스트 |
 
 두 스크립트 모두 스크립트 위치의 프로젝트를 기준으로 동일한 Python TUI를 실행하며, 전달받은 인자와 종료 코드를 유지함.
