@@ -576,7 +576,9 @@ def install_command(status: AgentStatus) -> tuple[UpdateCommand | None, str]:
         # Windows의 npm PowerShell 래퍼는 bun.cmd가 아닌 bun.exe를 직접 호출함.
         if status.spec.key == "omp" and not _which("bun.exe" if sys.platform == "win32" else "bun"):
             return None, "OMP 설치에는 Bun이 필요합니다. https://bun.com/docs/installation 에 따라 설치하고 Bun 실행 파일 폴더를 PATH에 추가한 뒤 다시 실행하세요."
-        argv = (npm, "install", "--global", f"{package}@latest")
+        # npm 12는 허용되지 않은 postinstall을 건너뛰므로 Claude 바이너리 배치를 명시적으로 허용함.
+        scripts = (f"--allow-scripts={package}",) if status.spec.key == "claude" else ()
+        argv = (npm, "install", "--global", *scripts, f"{package}@latest")
         return UpdateCommand(argv, " ".join(argv)), ""
     if package:
         return None, "설치하려면 npm이 필요합니다."

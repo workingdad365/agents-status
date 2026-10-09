@@ -454,7 +454,8 @@ class AppTests(unittest.IsolatedAsyncioTestCase):
                     self.assertNotIsInstance(app.screen, ConfirmUpdate)
                     self.assertEqual(run.await_count, row)
                     package = "@openai/codex" if row == 1 else "@anthropic-ai/claude-code"
-                    self.assertEqual(run.call_args.args[0].argv, ("/bin/npm", "install", "--global", f"{package}@latest"))
+                    scripts = ("--allow-scripts=@anthropic-ai/claude-code",) if row == 2 else ()
+                    self.assertEqual(run.call_args.args[0].argv, ("/bin/npm", "install", "--global", *scripts, f"{package}@latest"))
 
     async def test_delete_answers_keep_remove_or_cancel(self):
         status = AgentStatus(SPECS["codex"], StatusKind.CONFIG_ONLY, None, "-", "-")
@@ -1117,6 +1118,18 @@ class UninstallTests(unittest.IsolatedAsyncioTestCase):
             finally:
                 winreg.DeleteKey(winreg.HKEY_CURRENT_USER, key_path)
                 winreg.DeleteKey(winreg.HKEY_CURRENT_USER, r"Software\agents-status-test")
+
+    async def test_claude_install_allows_required_postinstall(self):
+        for system in ("linux", "win32", "darwin"):
+            with self.subTest(system=system), patch("agents_status.core.sys.platform", system), patch("agents_status.core._which", return_value="/bin/npm"):
+                status = AgentStatus(SPECS["claude"], StatusKind.MISSING, None, "-", "-")
+                command, reason = install_command(status)
+                self.assertEqual(reason, "")
+                self.assertEqual(command.argv, (
+                    "/bin/npm", "install", "--global",
+                    "--allow-scripts=@anthropic-ai/claude-code", "@anthropic-ai/claude-code@latest",
+                ))
+                self.assertIn("--allow-scripts=@anthropic-ai/claude-code", command.display)
 
     async def test_install_command_and_missing_dependencies(self):
         status = AgentStatus(SPECS["codex"], StatusKind.CONFIG_ONLY, None, "-", "-")
