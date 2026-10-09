@@ -399,6 +399,9 @@ def install_command(status: AgentStatus) -> tuple[UpdateCommand | None, str]:
         return UpdateCommand((bash, "-o", "pipefail", "-c", script), script), ""
     package = PACKAGES.get(status.spec.key)
     if package and (npm := shutil.which("npm")):
+        # Windows의 npm PowerShell 래퍼는 bun.cmd가 아닌 bun.exe를 직접 호출함.
+        if status.spec.key == "omp" and not shutil.which("bun.exe" if sys.platform == "win32" else "bun"):
+            return None, "OMP 설치에는 Bun이 필요합니다. https://bun.com/docs/installation 에 따라 설치하고 Bun 실행 파일 폴더를 PATH에 추가한 뒤 다시 실행하세요."
         argv = (npm, "install", "--global", f"{package}@latest")
         return UpdateCommand(argv, " ".join(argv)), ""
     if package:
