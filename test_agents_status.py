@@ -778,6 +778,88 @@ class UninstallTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(unrelated.exists())
             self.assertTrue(config.exists())
 
+    async def test_pi_managed_install_uninstall_removes_links_launcher_and_install_root(self):
+        marker = {"kind": "pi-managed-install", "schemaVersion": 1, "layout": "releases-v1"}
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            agent = home / ".pi/agent"
+            install = agent / "install"
+            (install / "releases/1.1.0/node_modules/.bin").mkdir(parents=True)
+            (install / "releases/1.1.0/node_modules/.bin/pi").touch()
+            (install / "current-version").write_text("1.1.0\n")
+            (agent / "bin").mkdir()
+            launcher = agent / "bin/pi"
+            launcher.write_text("#!/bin/sh\nexec \"$pi_release_bin\" \"$@\"\n")
+            tool = agent / "bin/fd"
+            tool.write_bytes(b"\x7fELF\x02")
+            (home / ".local/bin").mkdir(parents=True)
+            executable = home / ".local/bin/pi"
+            symlink_or_skip(executable, Path("../../.pi/agent/bin/pi"))
+            extra = home / "bin/pi"
+            extra.parent.mkdir()
+            symlink_or_skip(extra, launcher)
+            (install / "managed-install.json").write_text(json.dumps({**marker, "entrypoint": {"type": "symlink", "path": str(extra)}}))
+            settings = agent / "settings.json"
+            settings.write_text('{"defaultProvider": "openai-codex"}')
+            status = AgentStatus(SPECS["pi"], StatusKind.INSTALLED, executable, "1.1.0", "openai-codex")
+            plan, reason = uninstall_plan(status, home=home)
+            self.assertEqual(reason, "")
+            self.assertIsNone(plan.command)
+            self.assertEqual(plan.paths, (extra, executable, launcher, install))
+            with patch("agents_status.core._clean_user_environment", return_value=[]):
+                result = await run_uninstall(plan)
+            self.assertEqual(result.returncode, 0)
+            self.assertFalse(install.exists())
+            self.assertFalse(launcher.exists())
+            self.assertFalse(executable.is_symlink())
+            self.assertFalse(extra.is_symlink())
+            self.assertTrue(tool.exists())
+            self.assertTrue(settings.exists())
+
+            # 런처 디렉터리 자체가 PATH에 있어 링크 없이 설치된 경우에는 런처와 install 루트만 삭제함.
+            install.mkdir()
+            (install / "managed-install.json").write_text(json.dumps({**marker, "entrypoint": {"type": "symlink", "path": str(launcher)}}))
+            launcher.write_text("#!/bin/sh\n")
+            status = AgentStatus(SPECS["pi"], StatusKind.INSTALLED, launcher, "1.1.0", "openai-codex")
+            plan, reason = uninstall_plan(status, home=home)
+            self.assertEqual(reason, "")
+            self.assertEqual(plan.paths, (launcher, install))
+
+            # Windows 설치 스크립트는 bin에 pi·pi.cmd·pi.ps1·pi-launcher.js 런처를 두고 pi.cmd를 진입점으로 기록함.
+            for name in ("pi.cmd", "pi.ps1", "pi-launcher.js"):
+                (agent / "bin" / name).write_text("")
+            (install / "managed-install.json").write_text(json.dumps({**marker, "entrypoint": {"type": "script", "path": str(agent / "bin/pi.cmd")}}))
+            status = AgentStatus(SPECS["pi"], StatusKind.INSTALLED, agent / "bin/pi.cmd", "1.1.0", "openai-codex")
+            plan, reason = uninstall_plan(status, home=home)
+            self.assertEqual(reason, "")
+            self.assertEqual(plan.paths, (launcher, agent / "bin/pi.cmd", agent / "bin/pi.ps1", agent / "bin/pi-launcher.js", install))
+
+            # marker가 없거나 형식이 다르면 관리형 설치로 판별하지 않음.
+            (install / "managed-install.json").write_text(json.dumps({**marker, "layout": "releases-v2"}))
+            status = AgentStatus(SPECS["pi"], StatusKind.INSTALLED, executable, "1.1.0", "openai-codex")
+            symlink_or_skip(executable, launcher)
+            plan, reason = uninstall_plan(status, home=home)
+            self.assertIsNone(plan)
+            self.assertIn("판별하지 못했습니다", reason)
+
+    async def test_pi_npm_uninstall_detects_renamed_package(self):
+        with tempfile.TemporaryDirectory() as directory:
+            prefix = Path(directory) / "nodejs"
+            for package in ("@earendil-works/pi-coding-agent", "@mariozechner/pi-coding-agent"):
+                with self.subTest(package=package):
+                    root = prefix / "node_modules" / package
+                    root.mkdir(parents=True)
+                    (root / "package.json").write_text(json.dumps({"name": package}))
+                    executable = prefix / "pi.cmd"
+                    executable.write_text("@echo off")
+                    (prefix / "npm.cmd").write_text("")
+                    status = AgentStatus(SPECS["pi"], StatusKind.INSTALLED, executable, "1.1.0", "-")
+                    with patch("shutil.which", return_value=None):
+                        plan, reason = uninstall_plan(status)
+                    self.assertEqual(reason, "")
+                    self.assertEqual(plan.command.argv, (str(prefix / "npm.cmd"), "uninstall", "--global", "--prefix", str(prefix), package))
+                    shutil.rmtree(root.parent.parent if package.startswith("@") else root)
+
     async def test_agy_standalone_uninstall(self):
         with tempfile.TemporaryDirectory() as directory:
             home = Path(directory)

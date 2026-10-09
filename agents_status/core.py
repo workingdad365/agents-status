@@ -506,7 +506,7 @@ PACKAGES = {
     "opencode": "opencode-ai",
     "kilo": "@kilocode/cli",
     "omp": "@oh-my-pi/pi-coding-agent",
-    "pi": "@mariozechner/pi-coding-agent",
+    "pi": "@earendil-works/pi-coding-agent",
     "antigravity": "@google/gemini-cli",
     "crush": "@charmland/crush",
     "openclaw": "openclaw",
@@ -515,6 +515,7 @@ PACKAGES = {
 # npm 패키지 이름이 바뀐 도구는 두 이름 모두 삭제 판별 대상으로 삼음.
 _PACKAGE_ALIASES = {
     "opencode": ("@opencode/cli",),
+    "pi": ("@mariozechner/pi-coding-agent",),
 }
 
 
@@ -740,11 +741,55 @@ def uninstall_plan(status: AgentStatus, *, home: Path | None = None) -> tuple[Un
             if resolved.parent == install_root / "bin":
                 return UninstallPlan(paths=(install_root,)), ""
             return UninstallPlan(paths=(executable,)), ""
+    if status.spec.key == "pi" and (managed := _pi_managed_install(executable, resolved)):
+        # 공식 설치 스크립트의 Uninstall Pi와 같이 진입점 링크·런처·install 루트만 삭제하고, bin에 Pi가
+        # 내려받은 fd 등 도구와 설정·세션은 보존함.
+        root, entrypoint = managed
+        launchers = tuple(
+            launcher for name in ("pi", "pi.cmd", "pi.ps1", "pi-launcher.js")
+            if (launcher := root.parent / "bin" / name).is_file() or launcher.is_symlink()
+        )
+        links = tuple(
+            link for link in dict.fromkeys((entrypoint, executable))
+            if link is not None and link not in launchers and link.is_symlink()
+        )
+        return UninstallPlan(paths=(*links, *launchers, root)), ""
     if executable.parent == base / ".local/bin" and not executable.is_symlink() and "node_modules" not in resolved.parts:
         # 독립 실행 바이너리만 제거하며 스크립트 기반 설치는 별도 판별이 필요함.
         if _is_native_binary(executable, _UNIX_MAGIC):
             return UninstallPlan(paths=(executable,)), ""
     return None, f"{status.spec.name} 설치 경로({resolved})에서 지원하는 삭제 방식(npm/Bun/Homebrew/독립 바이너리)을 판별하지 못했습니다."
+
+
+def _pi_managed_install(executable: Path, resolved: Path) -> tuple[Path, Path | None] | None:
+    """pi 실행 파일이 속한 공식 설치 스크립트의 관리형 설치 루트와 marker에 기록된 진입점.
+
+    공식 설치 스크립트(https://pi.dev/install.sh, install.ps1)는 <에이전트 디렉터리>/install(기본
+    ~/.pi/agent/install)에 managed-install.json marker·current-version·releases를 두고, <에이전트 디렉터리>/bin에
+    런처(Unix는 pi 셸 스크립트, Windows는 pi·pi.cmd·pi.ps1·pi-launcher.js)를 둠. Unix는 PATH의 bin 디렉터리
+    (~/.local/bin 등)에 런처를 가리키는 심볼릭 링크를 진입점으로 두고, Windows는 bin 디렉터리를 사용자 PATH에
+    등록함. 설치 스크립트와 같이 실행 파일 디렉터리와 실행 파일·실제 경로의 bin 상위에서 marker를 찾음.
+    """
+    if executable.stem.lower() != "pi" or executable.suffix.lower() not in ("", ".cmd", ".ps1"):
+        return None
+    candidates = [executable.parent]
+    candidates.extend(path.parent.parent / "install" for path in (executable, resolved) if path.parent.name == "bin")
+    for root in candidates:
+        try:
+            marker = json.loads(_read(root / "managed-install.json"))
+        except json.JSONDecodeError:
+            continue
+        if (
+            not isinstance(marker, dict)
+            or marker.get("kind") != "pi-managed-install"
+            or marker.get("schemaVersion") != 1
+            or marker.get("layout") != "releases-v1"
+        ):
+            continue
+        entrypoint = marker.get("entrypoint")
+        path = entrypoint.get("path") if isinstance(entrypoint, dict) else None
+        return root, Path(path) if isinstance(path, str) and path else None
+    return None
 
 
 def _hermes_checkout(executable: Path, resolved: Path) -> Path | None:
