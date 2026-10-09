@@ -163,10 +163,9 @@ class AgentsStatusApp(App[None]):
     Screen { layout: vertical; }
     #summary { height: 3; padding: 1 2; background: $boost; }
     DataTable { height: 1fr; }
-    #actions { height: 3; padding: 0 1; align-vertical: middle; }
-    #actions Button { margin-right: 1; }
-    #sync-actions { height: 3; padding: 0 1; align-vertical: middle; }
-    #sync-actions Button { margin-right: 1; }
+    #actions { height: 1; padding: 0 1; }
+    #actions Button { width: auto; min-width: 0; height: 1; border: none; padding: 0 1; margin-right: 1; }
+    #action-status { height: 1; padding: 0 1; }
     #instructions-source { width: 1fr; height: 1; color: $text-muted; }
     #progress { display: none; width: 8; height: 1; }
     #activity { width: 1fr; height: 1; color: $text-muted; }
@@ -195,11 +194,11 @@ class AgentsStatusApp(App[None]):
             yield Button("새로고침", id="refresh", variant="default")
             yield Button("업데이트", id="update", variant="primary")
             yield Button("삭제", id="delete", variant="error")
-            yield LoadingIndicator(id="progress")
-            yield Label("", id="activity")
-        with Horizontal(id="sync-actions"):
             yield Button("지침 동기화", id="sync")
             yield Button("전체 동기화", id="sync-all")
+        with Horizontal(id="action-status"):
+            yield LoadingIndicator(id="progress")
+            yield Label("", id="activity")
             source = Label(Text(f"원본: {self.instructions_source}"), id="instructions-source")
             source.tooltip = str(self.instructions_source)
             yield source
