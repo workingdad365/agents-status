@@ -337,8 +337,12 @@ async def scan_agents(specs: Sequence[AgentSpec] = AGENTS) -> list[AgentStatus]:
 
 
 def _tool(directory: Path, name: str) -> Path | None:
-    """디렉터리의 패키지 관리자 실행 파일(Windows는 .exe 또는 .cmd)."""
-    for candidate in (name, f"{name}.exe", f"{name}.cmd"):
+    """디렉터리의 패키지 관리자 실행 파일(Windows는 .exe 또는 .cmd).
+
+    nvm-windows 등은 같은 디렉터리에 POSIX 셸 스크립트(npm)와 npm.cmd를 함께 두므로 Windows에서 실행
+    가능한 .exe, .cmd를 먼저 찾음.
+    """
+    for candidate in (f"{name}.exe", f"{name}.cmd", name):
         path = directory / candidate
         if path.is_file():
             return path
@@ -468,28 +472,45 @@ def _package_names(key: str) -> tuple[str, ...]:
     return (package, *_PACKAGE_ALIASES.get(key, ())) if package else ()
 
 
-def _winget_uninstall(resolved: Path, base: Path) -> tuple[UpdateCommand | None, str]:
-    """WinGet 이식 가능(portable) 패키지로 설치된 실행 파일의 삭제 명령.
+def _winget_package_directory(resolved: Path, packages: Path) -> str:
+    """WinGet 패키지 루트 기준으로 실행 파일이 속한 <패키지 ID>_<원본 식별자> 디렉터리 이름."""
+    if resolved.is_relative_to(packages):
+        return resolved.relative_to(packages).parts[0]
+    if resolved.parent != packages.parent / "Links" or not packages.is_dir():
+        return ""
+    # 자체 업데이트(copilot update 등)가 Links의 심볼릭 링크를 실제 파일로 바꾼 경우 패키지 디렉터리에서
+    # 같은 이름의 실행 파일을 찾아 대응함.
+    matches = [entry.name for entry in packages.iterdir() if entry.is_dir() and (entry / resolved.name).is_file()]
+    return matches[0] if len(matches) == 1 else ""
 
-    WinGet은 이식 가능 패키지를 패키지 루트 아래 <패키지 ID>_<원본 식별자> 디렉터리에 설치하고 그 디렉터리를
-    사용자 PATH에 등록함. 자체 업데이트(예: copilot update)로 파일이 바뀐 경우를 위해 --force를,
-    백업 파일(.old)까지 지우기 위해 --purge를 사용함.
+
+def _winget_uninstall(resolved: Path, base: Path) -> tuple[UninstallPlan | None, str]:
+    """WinGet 이식 가능(portable) 패키지로 설치된 실행 파일의 삭제 계획.
+
+    WinGet은 이식 가능 패키지를 패키지 루트 아래 <패키지 ID>_<원본 식별자> 디렉터리에 설치하고 Links 디렉터리에
+    심볼릭 링크를 둠. 자체 업데이트(예: copilot update)로 파일이 바뀐 경우를 위해 --force를,
+    백업 파일(.old)까지 지우기 위해 --purge를 사용함. Links에 실제 파일로 남은 실행 파일과 .old 백업은
+    winget이 지우지 않으므로 함께 삭제함.
     """
     roots = (
         Path(os.environ.get("LOCALAPPDATA", str(base / "AppData/Local"))) / "Microsoft/WinGet/Packages",
         Path(os.environ.get("ProgramFiles", r"C:\Program Files")) / "WinGet/Packages",
     )
     for root in roots:
-        if not resolved.is_relative_to(root):
+        directory = _winget_package_directory(resolved, root)
+        if not directory:
             continue
-        identifier, separator, source = resolved.relative_to(root).parts[0].partition("_")
+        identifier, separator, source = directory.partition("_")
         if not (identifier and separator and source):
             return None, ""
         winget = shutil.which("winget")
         if not winget:
             return None, f"WinGet 패키지({identifier})이지만 winget 명령을 찾을 수 없습니다."
         argv = (winget, "uninstall", "--id", identifier, "--exact", "--purge", "--force", "--disable-interactivity", "--accept-source-agreements")
-        return UpdateCommand(argv, " ".join(argv)), ""
+        paths: tuple[Path, ...] = ()
+        if resolved.parent == root.parent / "Links" and not resolved.is_symlink():
+            paths = (resolved, *sorted(resolved.parent.glob(f"{resolved.name}.old*")))
+        return UninstallPlan(UpdateCommand(argv, " ".join(argv)), paths=paths), ""
     return None, ""
 
 
@@ -567,9 +588,9 @@ def uninstall_plan(status: AgentStatus, *, home: Path | None = None) -> tuple[Un
         return UninstallPlan(paths=shims), ""
     base = Path.home() if home is None else home
     resolved = executable.resolve()
-    command, reason = _winget_uninstall(resolved, base)
-    if command:
-        return UninstallPlan(command), ""
+    plan, reason = _winget_uninstall(resolved, base)
+    if plan:
+        return plan, ""
     if reason:
         return None, reason
     if status.spec.key == "claude":

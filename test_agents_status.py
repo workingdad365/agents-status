@@ -946,6 +946,23 @@ class UninstallTests(unittest.IsolatedAsyncioTestCase):
             self.assertIsNone(command)
             self.assertIn("판별하지 못했습니다", reason)
 
+    async def test_windows_npm_prefix_prefers_cmd_over_posix_script(self):
+        # nvm-windows는 prefix에 POSIX 셸 스크립트 npm과 npm.cmd를 함께 두며 Windows에서는 npm.cmd만 실행 가능함.
+        with tempfile.TemporaryDirectory() as directory:
+            prefix = Path(directory) / "nodejs"
+            root = prefix / "node_modules/@opencode/cli"
+            root.mkdir(parents=True)
+            (root / "package.json").write_text('{"name":"@opencode/cli"}')
+            executable = prefix / "opencode.CMD"
+            executable.write_text("@echo off")
+            for name in ("npm", "npm.cmd", "npm.ps1"):
+                (prefix / name).write_text("")
+            status = AgentStatus(SPECS["opencode"], StatusKind.INSTALLED, executable, "1.0", "-")
+            with patch("shutil.which", return_value=None):
+                plan, reason = uninstall_plan(status)
+            self.assertEqual(reason, "")
+            self.assertEqual(plan.command.argv, (str(prefix / "npm.cmd"), "uninstall", "--global", "--prefix", str(prefix), "@opencode/cli"))
+
     async def test_winget_portable_uninstall_uses_package_identifier(self):
         with tempfile.TemporaryDirectory() as directory:
             home = Path(directory)
@@ -975,6 +992,39 @@ class UninstallTests(unittest.IsolatedAsyncioTestCase):
                 stray.write_bytes(b"MZ")
                 with patch("shutil.which", return_value=winget):
                     plan, reason = uninstall_plan(AgentStatus(SPECS["copilot"], StatusKind.INSTALLED, stray, "1", "-"), home=home)
+                self.assertIsNone(plan)
+                self.assertIn("판별하지 못했습니다", reason)
+
+    async def test_winget_self_updated_link_is_matched_to_package_directory(self):
+        # copilot update는 WinGet Links의 심볼릭 링크를 실제 파일로 바꾸고 .old-<pid>-<time> 백업을 남김.
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            winget_root = home / "AppData/Local/Microsoft/WinGet"
+            install_root = winget_root / "Packages/GitHub.Copilot_Microsoft.Winget.Source_8wekyb3d8bbwe"
+            install_root.mkdir(parents=True)
+            (install_root / "copilot.exe").write_bytes(b"MZ")
+            (winget_root / "Packages/Starship.Starship_Microsoft.Winget.Source_8wekyb3d8bbwe").mkdir()
+            links = winget_root / "Links"
+            links.mkdir()
+            executable = links / "copilot.EXE"
+            executable.write_bytes(b"MZ")
+            backup = links / "copilot.exe.old-53332-1791378375580"
+            backup.write_bytes(b"MZ")
+            (links / "starship.exe").write_bytes(b"MZ")
+            status = AgentStatus(SPECS["copilot"], StatusKind.INSTALLED, executable, "1.0.95", "github-copilot")
+            winget = str(home / "winget.exe")
+            with patch.dict(os.environ, {"LOCALAPPDATA": str(home / "AppData/Local")}):
+                with patch("shutil.which", side_effect=lambda name: winget if name == "winget" else None):
+                    plan, reason = uninstall_plan(status, home=home)
+                self.assertEqual(reason, "")
+                self.assertEqual(plan.command.argv[:5], (winget, "uninstall", "--id", "GitHub.Copilot", "--exact"))
+                self.assertEqual(plan.paths, (executable.resolve(), backup))
+
+                # 패키지 디렉터리에 같은 이름의 실행 파일이 없으면 WinGet 설치로 보지 않음.
+                unknown = links / "other.exe"
+                unknown.write_bytes(b"MZ")
+                with patch("shutil.which", return_value=winget):
+                    plan, reason = uninstall_plan(AgentStatus(SPECS["copilot"], StatusKind.INSTALLED, unknown, "1", "-"), home=home)
                 self.assertIsNone(plan)
                 self.assertIn("판별하지 못했습니다", reason)
 
