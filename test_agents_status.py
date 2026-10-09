@@ -1,5 +1,6 @@
 import asyncio
 import json
+import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -148,7 +149,7 @@ class UpdateTests(unittest.TestCase):
         self.assertEqual(command.argv[-2:], ("--global", "@openai/codex@latest"))
 
     def test_omp_and_agy_self_update(self):
-        for key, binary in (("omp", "omp"), ("antigravity", "agy")):
+        for key, binary in (("omp", "omp"), ("antigravity", "agy"), ("antigravity", "agy.EXE")):
             with self.subTest(key=key):
                 executable = Path("/custom/bin") / binary
                 status = AgentStatus(SPECS[key], StatusKind.INSTALLED, executable, "1.0", "unknown")
@@ -378,6 +379,41 @@ class UninstallTests(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(root.exists())
             self.assertFalse(executable.is_symlink())
             self.assertTrue(config.exists())
+
+    async def test_agy_standalone_uninstall(self):
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            install_root = home / "AppData/Local/agy"
+            (install_root / "bin").mkdir(parents=True)
+            executable = install_root / "bin/agy.exe"
+            executable.write_bytes(b"MZ\x90\x00")
+            (install_root / "bin/agy.exe.123.old").write_bytes(b"MZ\x90\x00")
+            config = home / ".gemini/antigravity-cli"
+            config.mkdir(parents=True)
+            status = AgentStatus(SPECS["antigravity"], StatusKind.INSTALLED, executable, "1.3.2", "google")
+            with patch.dict(os.environ, {"LOCALAPPDATA": str(home / "AppData/Local")}):
+                plan, reason = uninstall_plan(status, home=home)
+            self.assertEqual(reason, "")
+            self.assertEqual(plan.paths, (install_root,))
+            result = await run_uninstall(plan)
+            self.assertEqual(result.returncode, 0)
+            self.assertFalse(install_root.exists())
+            self.assertTrue(config.exists())
+
+            custom = home / "opt/agy"
+            custom.parent.mkdir()
+            custom.write_bytes(b"\x7fELF\x02")
+            status = AgentStatus(SPECS["antigravity"], StatusKind.INSTALLED, custom, "1.3.2", "google")
+            plan, reason = uninstall_plan(status, home=home)
+            self.assertEqual(reason, "")
+            self.assertEqual(plan.paths, (custom,))
+
+            script = home / "opt/agy.cmd"
+            script.write_text("@echo off")
+            status = AgentStatus(SPECS["antigravity"], StatusKind.INSTALLED, script, "1.3.2", "google")
+            plan, reason = uninstall_plan(status, home=home)
+            self.assertIsNone(plan)
+            self.assertIn("판별하지 못했습니다", reason)
 
     async def test_install_command_and_missing_dependencies(self):
         status = AgentStatus(SPECS["codex"], StatusKind.CONFIG_ONLY, None, "-", "-")

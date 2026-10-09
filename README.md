@@ -54,7 +54,7 @@ uv run agents-status
 
 설치는 npm 전역 패키지를 사용하며 Hermes는 공식 설치 스크립트의 비대화형 모드를 사용한다. Antigravity 항목의 신규 설치 대상은 기존 감지 대상 중 Gemini CLI이다.
 
-삭제는 실제 설치 경로에서 npm/Bun/Homebrew를 판별하여 해당 패키지 관리자를 사용한다. 기본 경로의 Claude·OpenCode·Hermes 네이티브 설치와 `~/.local/bin`의 독립 실행 바이너리도 지원한다. 판별되지 않는 설치는 사유를 표시한다. 프로그램 삭제가 실패하면 설정 삭제를 진행하지 않는다. 설정 삭제 대상 경로는 확인 창에 표시하며, 설정 디렉터리가 심볼릭 링크이면 링크만 삭제한다.
+삭제는 실제 설치 경로에서 npm/Bun/Homebrew를 판별하여 해당 패키지 관리자를 사용한다. 기본 경로의 Claude·OpenCode·Hermes 네이티브 설치와 `~/.local/bin`의 독립 실행 바이너리도 지원한다. Antigravity CLI(`agy`)는 공식 설치 스크립트가 설치한 단일 바이너리를 삭제하며, Windows에서는 `agy update`의 백업 파일이 남는 `%LOCALAPPDATA%\agy` 디렉터리를 함께 삭제한다. 판별되지 않는 설치는 사유를 표시한다. 프로그램 삭제가 실패하면 설정 삭제를 진행하지 않는다. 설정 삭제 대상 경로는 확인 창에 표시하며, 설정 디렉터리가 심볼릭 링크이면 링크만 삭제한다.
 
 ## 표시 정보
 
@@ -80,7 +80,7 @@ uv run agents-status
 | Kilo | 설정 모델 또는 최근 사용 모델 | `kilo upgrade` |
 | OMP | `~/.omp/agent/config.yml` | `omp update` |
 | Pi | 설정 또는 인증 프로바이더 | `pi update --self` |
-| Antigravity | Google 고정 | `agy update`, 그 외 npm/Bun/Homebrew 설치 판별 |
+| Antigravity | Google 고정 | `agy update`(Windows `agy.exe` 포함), 그 외 npm/Bun/Homebrew 설치 판별 |
 | Crush | `~/.local/share/crush/crush.json` | npm/Bun/Homebrew 설치 판별 |
 | Hermes | `~/.hermes/config.yaml` | `hermes update --yes` |
 | OpenClaw | `~/.openclaw/openclaw.json` | `openclaw update --yes` |

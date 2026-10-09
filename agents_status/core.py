@@ -347,6 +347,19 @@ def config_paths(spec: AgentSpec, *, home: Path | None = None) -> tuple[Path, ..
     return tuple(paths)
 
 
+_UNIX_MAGIC = (b"\x7fELF", b"\xcf\xfa\xed\xfe", b"\xca\xfe\xba\xbe")
+_PE_MAGIC = (b"MZ",)
+
+
+def _is_native_binary(path: Path, magics: tuple[bytes, ...]) -> bool:
+    try:
+        with path.open("rb") as stream:
+            head = stream.read(4)
+    except OSError:
+        return False
+    return any(head.startswith(magic) for magic in magics)
+
+
 def uninstall_plan(status: AgentStatus, *, home: Path | None = None) -> tuple[UninstallPlan | None, str]:
     if not status.executable:
         return UninstallPlan(), ""
@@ -365,15 +378,18 @@ def uninstall_plan(status: AgentStatus, *, home: Path | None = None) -> tuple[Un
         root = base / ".hermes/hermes-agent"
         if resolved.is_relative_to(root) and (root / "hermes_cli").is_dir():
             return UninstallPlan(paths=(executable, root)), ""
+    if status.spec.key == "antigravity" and executable.stem.lower() == "agy" and not executable.is_symlink():
+        # 공식 설치 스크립트는 Windows에 %LOCALAPPDATA%\agy\bin\agy.exe, 그 외에는 ~/.local/bin/agy
+        # (또는 --dir 지정 경로)로 단일 바이너리를 설치하며 agy update는 같은 폴더에 .old 백업을 남김.
+        install_root = Path(os.environ.get("LOCALAPPDATA", str(base / "AppData/Local"))) / "agy"
+        if "node_modules" not in resolved.parts and _is_native_binary(resolved, _PE_MAGIC + _UNIX_MAGIC):
+            if resolved.parent == install_root / "bin":
+                return UninstallPlan(paths=(install_root,)), ""
+            return UninstallPlan(paths=(executable,)), ""
     if executable.parent == base / ".local/bin" and not executable.is_symlink() and "node_modules" not in resolved.parts:
         # 독립 실행 바이너리만 제거하며 스크립트 기반 설치는 별도 판별이 필요함.
-        try:
-            with executable.open("rb") as stream:
-                magic = stream.read(4)
-            if magic in (b"\x7fELF", b"\xcf\xfa\xed\xfe", b"\xca\xfe\xba\xbe"):
-                return UninstallPlan(paths=(executable,)), ""
-        except OSError:
-            pass
+        if _is_native_binary(executable, _UNIX_MAGIC):
+            return UninstallPlan(paths=(executable,)), ""
     return None, f"{status.spec.name} 설치 경로({resolved})에서 지원하는 삭제 방식(npm/Bun/Homebrew/독립 바이너리)을 판별하지 못했습니다."
 
 
@@ -410,7 +426,8 @@ def update_command(status: AgentStatus) -> tuple[UpdateCommand | None, str]:
     if spec.update_args:
         argv = (str(status.executable), *spec.update_args)
         return UpdateCommand(argv, " ".join((status.executable.name, *spec.update_args))), ""
-    if spec.key == "antigravity" and status.executable.name == "agy":
+    if spec.key == "antigravity" and status.executable.stem.lower() == "agy":
+        # Windows에서는 agy.EXE처럼 확장자가 붙으므로 stem으로 비교함.
         argv = (str(status.executable), "update")
         return UpdateCommand(argv, "agy update"), ""
     packages = {
