@@ -9,7 +9,8 @@ import tempfile
 import unittest
 from unittest.mock import AsyncMock, patch
 
-from textual.widgets import Button, DataTable
+from rich.text import Text
+from textual.widgets import Button, DataTable, RichLog
 
 from agents_status.app import AgentsStatusApp, ConfirmDelete, ConfirmUpdate
 from agents_status.core import (
@@ -280,6 +281,53 @@ class AppTests(unittest.IsolatedAsyncioTestCase):
                 self.assertIsInstance(app.screen, ConfirmUpdate)
                 self.assertEqual(app.screen.agent_name, "Pi")
 
+    async def test_log_drag_selection_copies_text_and_click_clears(self):
+        status = AgentStatus(SPECS["pi"], StatusKind.INSTALLED, Path("/bin/pi"), "1.0.0", "openai")
+        with patch("agents_status.app.scan_agents", AsyncMock(return_value=[status])):
+            app = AgentsStatusApp()
+            async with app.run_test(size=(40, 30)) as pilot:
+                await pilot.pause()
+                log = app.query_one("#log", RichLog)
+                log.clear()
+                log.write("[bold]OpenClaw 업데이트[/bold]: $ openclaw update --yes")
+                log.write(Text.from_ansi("\x1b[31mNode 22 is unsupported\x1b[0m; use 26"))
+                await pilot.pause()
+                # 로그 위젯은 위쪽 테두리 1줄과 좌우 여백 1칸이 있으므로 내용 좌표는 (1, 1)부터 시작함.
+                await pilot.mouse_down("#log", offset=(1, 1))
+                await pilot.hover("#log", offset=(23, 2))
+                await pilot.mouse_up("#log", offset=(23, 2))
+                await pilot.pause()
+                self.assertEqual(app._clipboard, "OpenClaw 업데이트: $ openclaw update --yes\nNode 22 is unsupported")
+                selection_style = app.screen.get_component_rich_style("screen--selection")
+
+                def highlighted(y):
+                    return "".join(segment.text for segment in log.render_line(y) if segment.style and segment.style.bgcolor == selection_style.bgcolor)
+
+                # 첫 줄은 화면 폭(38칸)에 맞게 잘린 보이는 부분 전체가, 둘째 줄은 선택 끝까지만 강조됨.
+                self.assertEqual(highlighted(0).rstrip(), log.render_line(0).text.rstrip())
+                self.assertTrue(highlighted(0).startswith("OpenClaw 업데이트: $ openclaw update"))
+                self.assertEqual(highlighted(1), "Node 22 is unsupported")
+                # 한글은 2칸을 차지하므로 셀 9~17을 드래그하면 '업데이트'만 선택됨.
+                await pilot.mouse_down("#log", offset=(10, 1))
+                await pilot.hover("#log", offset=(18, 1))
+                await pilot.mouse_up("#log", offset=(18, 1))
+                await pilot.pause()
+                self.assertEqual(app._clipboard, "업데이트")
+                # 가로 스크롤 상태에서도 화면 셀 위치를 원본 문자 인덱스로 변환함 (가장 긴 줄 42칸, 폭 38칸).
+                log.scroll_to(x=6, animate=False)
+                await pilot.pause()
+                self.assertEqual(log.scroll_offset.x, 6)
+                await pilot.mouse_down("#log", offset=(4, 1))
+                await pilot.hover("#log", offset=(8, 1))
+                await pilot.mouse_up("#log", offset=(8, 1))
+                await pilot.pause()
+                self.assertEqual(app._clipboard, "업데")
+                app._clipboard = ""
+                await pilot.click("#log", offset=(3, 2))
+                await pilot.pause()
+                self.assertEqual(app.screen.selections, {})
+                self.assertEqual(app._clipboard, "")
+
     async def test_update_output_is_streamed_before_completion(self):
         lines = []
         first_line = asyncio.Event()
@@ -303,6 +351,36 @@ class AppTests(unittest.IsolatedAsyncioTestCase):
         result = await task
         self.assertEqual(result.returncode, 0)
         self.assertEqual(lines, ["시작", "완료"])
+
+
+class WorkingDirectoryTests(unittest.IsolatedAsyncioTestCase):
+    async def test_update_runs_in_temporary_directory_and_cleans_leftovers(self):
+        # 설치 스크립트가 작업 디렉터리에 남긴 파일까지 함께 정리되어야 함.
+        command = UpdateCommand(
+            (sys.executable, "-c", "import os; print(os.getcwd(), flush=True); os.mkdir('archive-leftover')"),
+            "cwd test",
+        )
+        result = await run_update(command)
+        self.assertEqual(result.returncode, 0)
+        workdir = Path(result.output.strip())
+        self.assertTrue(workdir.name.startswith("agents-status-"), workdir)
+        self.assertNotEqual(workdir, Path.cwd())
+        self.assertFalse(workdir.exists())
+
+    def test_version_probe_runs_in_home_or_given_directory(self):
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory, "home")
+            bin_dir = Path(directory, "bin")
+            scratch = Path(directory, "scratch")
+            for folder in (home, bin_dir, scratch):
+                folder.mkdir()
+            probe = bin_dir / "copilot"
+            probe.write_text(f"#!{sys.executable}\nimport os\nprint(os.getcwd())\n", encoding="utf-8")
+            probe.chmod(0o755)
+            scanned = scan_agent(SPECS["copilot"], home=home, env={}, path=str(bin_dir))
+            self.assertEqual(scanned.version, str(home))
+            scanned = scan_agent(SPECS["copilot"], home=home, env={}, path=str(bin_dir), cwd=scratch)
+            self.assertEqual(scanned.version, str(scratch))
 
 
 class UninstallTests(unittest.IsolatedAsyncioTestCase):

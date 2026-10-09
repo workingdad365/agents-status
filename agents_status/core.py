@@ -10,6 +10,7 @@ from pathlib import Path
 import re
 import shutil
 import subprocess
+import tempfile
 from typing import Callable, Mapping, Sequence
 
 
@@ -229,12 +230,21 @@ AGENTS: tuple[AgentSpec, ...] = (
 )
 
 
-def _version(executable: Path, args: Sequence[str]) -> str:
+def _scratch_directory() -> tempfile.TemporaryDirectory[str]:
+    """외부 명령의 작업 디렉터리로 쓸 임시 디렉터리.
+
+    일부 설치 스크립트(예: @charmland/crush의 npm 래퍼)는 현재 작업 디렉터리에
+    임시 파일을 남기므로 프로젝트 디렉터리가 오염되지 않도록 격리하고 종료 후 정리함.
+    """
+    return tempfile.TemporaryDirectory(prefix="agents-status-", ignore_cleanup_errors=True)
+
+
+def _version(executable: Path, args: Sequence[str], cwd: Path | str | None = None) -> str:
     try:
         result = subprocess.run(
             [str(executable), *args], capture_output=True, text=True,
             encoding="utf-8", errors="replace",
-            stdin=subprocess.DEVNULL, timeout=60, check=False,
+            stdin=subprocess.DEVNULL, timeout=60, check=False, cwd=cwd,
             env={**os.environ, "NO_COLOR": "1", "PYTHONIOENCODING": "utf-8"},
         )
     except (OSError, subprocess.TimeoutExpired):
@@ -249,6 +259,7 @@ def scan_agent(
     home: Path | None = None,
     env: Mapping[str, str] | None = None,
     path: str | None = None,
+    cwd: Path | str | None = None,
 ) -> AgentStatus:
     environment = os.environ if env is None else env
     base = Path(environment.get("HOME", Path.home())) if home is None else home
@@ -261,14 +272,17 @@ def scan_agent(
     executable = Path(found) if found else None
     provider = spec.provider_probe(base, environment) if executable or (base / spec.config_root).is_dir() else "-"
     if executable:
-        return AgentStatus(spec, StatusKind.INSTALLED, executable, _version(executable, spec.version_args), provider)
+        # 버전 조회도 홈 디렉터리(기본) 또는 지정한 디렉터리에서 실행하여 프로젝트 디렉터리 오염을 막음.
+        version = _version(executable, spec.version_args, base if cwd is None else cwd)
+        return AgentStatus(spec, StatusKind.INSTALLED, executable, version, provider)
     if (base / spec.config_root).is_dir():
         return AgentStatus(spec, StatusKind.CONFIG_ONLY, None, "-", provider)
     return AgentStatus(spec, StatusKind.MISSING, None, "-", "-")
 
 
 async def scan_agents(specs: Sequence[AgentSpec] = AGENTS) -> list[AgentStatus]:
-    return list(await asyncio.gather(*(asyncio.to_thread(scan_agent, spec) for spec in specs)))
+    with _scratch_directory() as scratch:
+        return list(await asyncio.gather(*(asyncio.to_thread(scan_agent, spec, cwd=scratch) for spec in specs)))
 
 
 def _package_update(executable: Path, packages: tuple[str, ...], *, uninstall: bool = False) -> UpdateCommand | None:
@@ -460,12 +474,14 @@ async def run_update(
     on_output: Callable[[str], None] | None = None,
 ) -> CommandResult:
     process: asyncio.subprocess.Process | None = None
+    scratch = _scratch_directory()
     try:
         process = await asyncio.create_subprocess_exec(
             *command.argv,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
             stdin=asyncio.subprocess.DEVNULL,
+            cwd=scratch.name,
             env={**os.environ, "NO_COLOR": "1", "PYTHONIOENCODING": "utf-8"},
         )
 
@@ -504,4 +520,6 @@ async def run_update(
         if on_output is not None:
             on_output(message)
         return CommandResult(127, message)
+    finally:
+        scratch.cleanup()
     return CommandResult(process.returncode or 0, output)

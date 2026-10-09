@@ -1,17 +1,69 @@
 from __future__ import annotations
 
+from rich.cells import get_character_cell_size
 from rich.text import Text
-from textual import on, work
+from textual import events, on, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
+from textual.selection import Selection
+from textual.strip import Strip
 from textual.widgets import Button, DataTable, Footer, Header, Label, LoadingIndicator, RichLog, Static
 
 from .core import (
     AgentStatus, StatusKind, UpdateCommand, UninstallPlan, config_paths,
     install_command, scan_agents, run_uninstall, run_update, uninstall_plan, update_command,
 )
+
+
+def _cell_to_index(text: str, cell: int) -> int:
+    """셀 위치에 해당하는 문자 인덱스를 구함. 한글 등 2칸 문자를 고려함."""
+    width = 0
+    for index, character in enumerate(text):
+        if width >= cell:
+            return index
+        width += get_character_cell_size(character)
+    return len(text)
+
+
+class SelectableRichLog(RichLog):
+    """마우스 드래그로 텍스트를 선택하고 복사할 수 있는 RichLog.
+
+    RichLog는 선택 영역의 텍스트 추출과 강조 표시를 구현하지 않으므로
+    Log 위젯과 같은 방식으로 문자 오프셋 메타와 선택 스타일을 적용함.
+    """
+
+    def get_selection(self, selection: Selection) -> tuple[str, str] | None:
+        text = "\n".join(strip.text for strip in self.lines)
+        selected = selection.extract(text)
+        return "\n".join(line.rstrip() for line in selected.split("\n")), "\n"
+
+    def selection_updated(self, selection: Selection | None) -> None:
+        self._line_cache.clear()
+        self.refresh()
+
+    def _render_line(self, y: int, scroll_x: int, width: int) -> Strip:
+        if y >= len(self.lines):
+            return Strip.blank(width, self.rich_style)
+        selection = self.text_selection
+        key = (y + self._start_line, scroll_x, width, self._widest_line_width, selection)
+        if key in self._line_cache:
+            return self._line_cache[key]
+        source = self.lines[y]
+        line = source
+        span = selection.get_span(y) if selection is not None else None
+        if span is not None:
+            start, end = span
+            text = Text(no_wrap=True, end="")
+            for segment in source:
+                text.append(segment.text, segment.style)
+            text.stylize(self.screen.get_component_rich_style("screen--selection"), start, None if end == -1 else end)
+            line = Strip(text.render(self.app.console), source.cell_length)
+        line = line.crop_extend(scroll_x, scroll_x + width, self.rich_style)
+        line = line.apply_offsets(_cell_to_index(source.text, scroll_x), y)
+        self._line_cache[key] = line
+        return line
 
 
 class ConfirmUpdate(ModalScreen[bool]):
@@ -122,13 +174,21 @@ class AgentsStatusApp(App[None]):
             yield Button("삭제", id="delete", variant="error")
             yield LoadingIndicator(id="progress")
             yield Label("", id="activity")
-        yield RichLog(id="log", highlight=True, markup=True)
+        yield SelectableRichLog(id="log", highlight=True, markup=True)
         yield Footer()
 
     def on_mount(self) -> None:
         table = self.query_one(DataTable)
         table.add_columns("상태", "에이전트", "버전", "프로바이더", "실행 파일")
         self.load_statuses()
+
+    @on(events.TextSelected)
+    def copy_selection(self) -> None:
+        # 마우스 버튼을 놓으면 드래그로 선택한 텍스트를 OSC 52로 터미널 클립보드에 복사함.
+        text = self.screen.get_selected_text()
+        if text:
+            self.copy_to_clipboard(text)
+            self.notify("선택한 텍스트를 클립보드에 복사했습니다.", timeout=2)
 
     @work(exclusive=True, group="scan")
     async def load_statuses(self) -> None:
