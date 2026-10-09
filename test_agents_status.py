@@ -884,6 +884,27 @@ class UninstallTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(command.argv[:3], ("/bin/tool", "-o", "pipefail"))
         self.assertIn("install.sh", command.argv[4])
 
+    async def test_omp_install_requires_bun_runtime(self):
+        status = AgentStatus(SPECS["omp"], StatusKind.MISSING, None, "-", "-")
+        for platform, runtime in (("win32", "bun.exe"), ("linux", "bun")):
+            for available in (False, True):
+                with self.subTest(platform=platform, available=available):
+                    # Windows에서 bun.cmd만 발견되는 경우도 런타임 누락으로 처리함.
+                    tools = {"npm": "/bin/npm", "bun": "/bin/bun.cmd"} if platform == "win32" else {"npm": "/bin/npm"}
+                    if available:
+                        tools[runtime] = f"/bin/{runtime}"
+                    with patch("agents_status.core.sys.platform", platform), patch("shutil.which", side_effect=tools.get):
+                        command, reason = install_command(status)
+                    if available:
+                        self.assertEqual(command.argv, (
+                            "/bin/npm", "install", "--global", "@oh-my-pi/pi-coding-agent@latest",
+                        ))
+                        self.assertEqual(reason, "")
+                    else:
+                        self.assertIsNone(command)
+                        self.assertIn("Bun", reason)
+                        self.assertIn("PATH", reason)
+
 
 if __name__ == "__main__":
     unittest.main()
