@@ -69,6 +69,8 @@ agents-status
 
 설치는 npm 전역 패키지를 사용하며 Hermes는 공식 설치 스크립트의 비대화형 모드를 사용한다(Windows는 PowerShell로 `install.ps1`, 그 외는 bash로 `install.sh`). Antigravity 항목의 신규 설치 대상은 기존 감지 대상 중 Gemini CLI이다.
 
+Windows Hermes는 PATH에서 찾지 못하면 `$HERMES_HOME`(기본값 `%LOCALAPPDATA%\hermes`) 아래의 `bin\hermes.exe`, `bin\hermes.cmd`, 구버전 `hermes-agent\venv\Scripts\hermes.exe`를 차례로 확인한다. 설치 후 부모 터미널의 PATH가 갱신되지 않아도 설치 상태를 감지하며, PATH에 이미 등록된 실행 파일을 우선한다. Windows 설치 스크립트가 반환한 실패 코드도 앱에 전달하여 설치 실패를 성공으로 표시하지 않도록 한다.
+
 OMP의 npm 패키지는 실행에 Bun이 필요하므로, 신규 설치 전에 PATH에서 Bun을 확인하고 없으면 설치 방법을 안내한다. Windows에서는 PowerShell용 OMP 래퍼가 `bun.exe`를 직접 호출하므로 `bun.cmd`만으로는 충분하지 않다. [Bun 공식 설치 방법](https://bun.com/docs/installation)으로 설치한 뒤 실제 `bun.exe`가 있는 폴더를 PATH에 등록해야 한다. npm으로 Bun을 설치한 경우 해당 폴더는 `<npm prefix --global 결과>\node_modules\bun\bin`이다. 새 터미널에서 `bun.exe --version`과 `omp --version`으로 확인한다.
 
 삭제는 실제 설치 경로에서 npm/Bun/Homebrew를 판별하여 해당 패키지 관리자를 사용한다. 기본 경로의 Claude·OpenCode·Hermes 네이티브 설치와 `~/.local/bin`의 독립 실행 바이너리도 지원한다. Hermes 공식 설치 스크립트 설치는 실행 파일(Unix는 `~/.local/bin/hermes` 셸 shim 또는 구버전 심볼릭 링크, Windows는 `venv\Scripts\hermes.exe`)이 가리키는 `hermes-agent` 체크아웃 디렉터리(기본 위치는 `$HERMES_HOME` 아래, Windows 기본값 `%LOCALAPPDATA%\hermes`, root FHS 설치는 `/usr/local/lib`)와 shim을 삭제한다. Windows에서는 삭제한 디렉터리를 가리키는 사용자 PATH 항목을 레지스트리에서 제거하고, 설정까지 삭제하면 `HERMES_HOME` 환경 변수도 제거한다. Codex 공식 설치 스크립트 설치는 `~/.local/bin/codex` 링크(macOS는 `codex-code-mode-host` 링크 포함)와 `~/.codex/packages`의 `standalone`·`app-server-daemon` 패키지를 삭제한다. 이때 실행 중인 app-server 데몬 프로세스는 종료하지 않으므로, Windows에서 데몬이 실행 중이면 파일 잠금으로 삭제가 실패할 수 있다. Antigravity CLI(`agy`)는 공식 설치 스크립트가 설치한 단일 바이너리를 삭제하며, Windows에서는 `agy update`의 백업 파일이 남는 `%LOCALAPPDATA%\agy` 디렉터리를 함께 삭제한다. 판별되지 않는 설치는 사유를 표시한다. 프로그램 삭제가 실패하면 설정 삭제를 진행하지 않는다. 설정 삭제 대상 경로는 확인 창에 표시하며, 설정 디렉터리가 심볼릭 링크이면 링크만 삭제한다.
@@ -83,7 +85,7 @@ Windows의 Claude Code 네이티브 설치는 [공식 제거 경로](https://cod
 | 에이전트 | 도구 이름 |
 | 버전 | 설치된 실행 파일의 `--version` 결과 |
 | 프로바이더 | 설정에서 확인한 현재 LLM 프로바이더 |
-| 실행 파일 | PATH에서 발견한 실제 실행 파일 경로 |
+| 실행 파일 | PATH 또는 Windows Hermes 설치 위치에서 발견한 실행 파일 경로 |
 
 버전 조회는 각 에이전트에 대해 병렬로 실행됩니다. 출력의 ANSI 색상·커서·창 제목 등 터미널 제어문자를 제거하고 첫 번째 비어 있지 않은 줄을 표시합니다. 실행 오류(예: OMP 실행에 필요한 Bun이 PATH에 없음), 빈 출력 또는 60초 시간 초과는 `조회 실패`로 표시합니다.
 

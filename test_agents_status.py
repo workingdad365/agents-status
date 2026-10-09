@@ -155,6 +155,69 @@ class ProviderTests(unittest.TestCase):
             self.assertEqual(status.status, StatusKind.MISSING)
 
 
+class DetectionTests(unittest.TestCase):
+    def test_windows_hermes_is_found_without_inherited_path(self):
+        for custom_home in (False, True):
+            for relative in ("bin/hermes.exe", "bin/hermes.cmd", "hermes-agent/venv/Scripts/hermes.exe"):
+                with self.subTest(custom_home=custom_home, relative=relative), tempfile.TemporaryDirectory() as directory:
+                    home = Path(directory)
+                    data = home / ("custom hermes" if custom_home else "AppData/Local/hermes")
+                    executable = data / relative
+                    executable.parent.mkdir(parents=True)
+                    executable.touch()
+                    (data / "config.yaml").write_text("model:\n  provider: openai\n", encoding="utf-8")
+                    env = {"PATH": "", "LOCALAPPDATA": str(home / "AppData/Local")}
+                    if custom_home:
+                        env["HERMES_HOME"] = str(data)
+                    with patch("agents_status.core.sys.platform", "win32"), patch("agents_status.core._version", return_value="Hermes Agent v1.0") as probe:
+                        status = scan_agent(SPECS["hermes"], home=home, env=env, path="")
+                    self.assertEqual(status.status, StatusKind.INSTALLED)
+                    self.assertEqual(status.executable, executable)
+                    self.assertEqual(status.version, "Hermes Agent v1.0")
+                    self.assertEqual(status.provider, "openai")
+                    probe.assert_called_once_with(executable, ("--version",), home)
+                    command, reason = update_command(status)
+                    self.assertEqual(reason, "")
+                    self.assertEqual(command.argv, (str(executable), "update", "--yes"))
+
+    def test_windows_hermes_prefers_path_installation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            fallback = home / "AppData/Local/hermes/bin/hermes.exe"
+            fallback.parent.mkdir(parents=True)
+            fallback.touch()
+            selected = home / "other/hermes.exe"
+            with patch("agents_status.core.sys.platform", "win32"), patch("shutil.which", return_value=str(selected)), patch("agents_status.core._version", return_value="1"):
+                status = scan_agent(SPECS["hermes"], home=home, env={})
+            self.assertEqual(status.executable, selected)
+
+    def test_windows_hermes_config_without_launcher_is_not_installed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            data = home / "AppData/Local/hermes"
+            env = {"LOCALAPPDATA": str(home / "AppData/Local"), "PATH": ""}
+            with patch("agents_status.core.sys.platform", "win32"), patch("agents_status.core._version") as probe:
+                status = scan_agent(SPECS["hermes"], home=home, env=env, path="")
+                self.assertEqual(status.status, StatusKind.MISSING)
+                # 설치 소스나 이름이 같은 디렉터리만 남아 있어도 실행 파일로 보지 않음.
+                (data / "hermes-agent/hermes_cli").mkdir(parents=True)
+                (data / "bin/hermes.exe").mkdir(parents=True)
+                status = scan_agent(SPECS["hermes"], home=home, env=env, path="")
+                self.assertEqual(status.status, StatusKind.CONFIG_ONLY)
+                self.assertIsNone(status.executable)
+                probe.assert_not_called()
+
+    def test_windows_hermes_fallback_does_not_apply_to_unix(self):
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            executable = home / ".hermes/bin/hermes.exe"
+            executable.parent.mkdir(parents=True)
+            executable.touch()
+            with patch("agents_status.core.sys.platform", "linux"):
+                status = scan_agent(SPECS["hermes"], home=home, env={}, path="")
+            self.assertEqual(status.status, StatusKind.CONFIG_ONLY)
+
+
 class VersionTests(unittest.TestCase):
     def test_version_strips_terminal_sequences_and_skips_empty_lines(self):
         cases = (
@@ -797,6 +860,26 @@ class UninstallTests(unittest.IsolatedAsyncioTestCase):
             command, reason = install_command(status)
         self.assertEqual(command.argv[:3], ("/bin/tool", "-o", "pipefail"))
         self.assertIn("install.sh", command.argv[4])
+
+    async def test_hermes_powershell_installer_propagates_failure(self):
+        shells = [shell for name in ("powershell", "pwsh") if (shell := shutil.which(name))]
+        if not shells:
+            self.skipTest("PowerShell이 설치되지 않음")
+        status = AgentStatus(SPECS["hermes"], StatusKind.MISSING, None, "-", "-")
+        for shell in shells:
+            for exitcode in (0, 17):
+                with self.subTest(shell=shell, exitcode=exitcode):
+                    with patch("agents_status.core.sys.platform", "win32"), patch("shutil.which", return_value=shell):
+                        command, _ = install_command(status)
+                    # 실제 다운로드/설치 없이 공식 스크립트의 LASTEXITCODE 실패 보고를 재현함.
+                    installer = f"param([switch]$NonInteractive); if (-not $NonInteractive) {{ throw 'interactive' }}; $global:LASTEXITCODE = {exitcode}"
+                    # irm은 별칭이므로 별칭이 가리키는 명령을 대체해야 실제 다운로드를 막을 수 있음.
+                    stub = "function Invoke-RestMethod { '" + installer.replace("'", "''") + "' }; "
+                    result = subprocess.run((*command.argv[:-1], stub + command.argv[-1]), capture_output=True, timeout=10)
+                    self.assertEqual(result.returncode, exitcode, result.stderr)
+            stub = "function Invoke-RestMethod { throw 'download failed' }; "
+            result = subprocess.run((*command.argv[:-1], stub + command.argv[-1]), capture_output=True, timeout=10)
+            self.assertNotEqual(result.returncode, 0)
 
     async def test_omp_install_requires_bun_runtime(self):
         status = AgentStatus(SPECS["omp"], StatusKind.MISSING, None, "-", "-")

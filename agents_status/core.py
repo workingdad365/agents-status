@@ -212,7 +212,8 @@ def _hermes_home(home: Path, env: Mapping[str, str] | None = None) -> Path:
     """Hermes 데이터 디렉터리.
 
     HERMES_HOME이 우선하며, 없으면 Windows는 %LOCALAPPDATA%\\hermes, 그 외는 ~/.hermes임.
-    공식 설치 스크립트는 이 디렉터리 아래 hermes-agent에 소스와 venv를 설치함.
+    공식 설치 스크립트는 이 디렉터리 아래 hermes-agent에 소스, bin에 실행 런처를 설치함.
+    구버전은 hermes-agent/venv/Scripts에 실행 파일을 설치함.
     """
     environment = os.environ if env is None else env
     custom = environment.get("HERMES_HOME", "").strip()
@@ -313,6 +314,15 @@ def scan_agent(
             break
     executable = Path(found) if found else None
     config_root = _config_root(spec, base, environment)
+    if executable is None and spec.key == "hermes" and sys.platform == "win32":
+        # 설치 자식 프로세스가 등록한 PATH는 부모 터미널을 통해 재실행해도 오래된 값일 수 있음.
+        # 최신 설치의 bin 런처와 구버전 venv 진입점을 직접 확인함.
+        candidates = (
+            config_root / "bin/hermes.exe",
+            config_root / "bin/hermes.cmd",
+            config_root / "hermes-agent/venv/Scripts/hermes.exe",
+        )
+        executable = next((candidate for candidate in candidates if candidate.is_file()), None)
     provider = spec.provider_probe(base, environment) if executable or config_root.is_dir() else "-"
     if executable:
         # 버전 조회도 홈 디렉터리(기본) 또는 지정한 디렉터리에서 실행하여 프로젝트 디렉터리 오염을 막음.
@@ -391,7 +401,12 @@ def install_command(status: AgentStatus) -> tuple[UpdateCommand | None, str]:
             shell = shutil.which("pwsh") or shutil.which("powershell")
             if not shell:
                 return None, "Hermes 설치에는 PowerShell이 필요합니다."
-            script = "& ([scriptblock]::Create((irm https://hermes-agent.nousresearch.com/install.ps1))) -NonInteractive"
+            # 스크립트 블록 호출 시 설치기가 exit 대신 LASTEXITCODE로 실패를 보고하기도 함.
+            script = (
+                "$ErrorActionPreference = 'Stop'; $global:LASTEXITCODE = 0; "
+                "& ([scriptblock]::Create((irm https://hermes-agent.nousresearch.com/install.ps1))) -NonInteractive; "
+                "exit $LASTEXITCODE"
+            )
             return UpdateCommand((shell, "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script), script), ""
         if not shutil.which("curl") or not (bash := shutil.which("bash")):
             return None, "Hermes 설치에는 curl과 bash가 필요합니다."
