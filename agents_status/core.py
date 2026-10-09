@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 import json
 import os
+import platform
 from pathlib import Path, PureWindowsPath
 import re
 import shutil
@@ -294,6 +295,38 @@ def _version(executable: Path, args: Sequence[str], cwd: Path | str | None = Non
     return lines[0][:80] if lines else "조회 실패"
 
 
+def _windows_drive_path(path: Path) -> bool:
+    """WSL의 Windows 드라이브 경로와 해당 경로를 가리키는 링크 여부."""
+    resolved = path.resolve()
+    if re.match(r"^/mnt/[a-zA-Z](?:/|$)", str(resolved)):
+        return True
+    # 사용자 지정 마운트 위치도 drvfs 마운트 정보를 통해 확인함.
+    for line in _read(Path("/proc/mounts")).splitlines():
+        fields = line.split()
+        if len(fields) < 4:
+            continue
+        if fields[2] != "drvfs" and not (fields[2] == "9p" and "aname=drvfs" in fields[3]):
+            continue
+        mount = re.sub(r"\\([0-7]{3})", lambda match: chr(int(match[1], 8)), fields[1])
+        if resolved.is_relative_to(mount):
+            return True
+    return False
+
+
+def _which(binary: str, path: str | None = None) -> str | None:
+    """WSL에서는 Windows 드라이브의 명령을 제외하고 실행 파일을 검색함."""
+    if sys.platform != "linux" or "microsoft" not in platform.release().lower():
+        return shutil.which(binary) if path is None else shutil.which(binary, path=path)
+    search_path = os.environ.get("PATH", os.defpath) if path is None else path
+    for directory in search_path.split(os.pathsep):
+        if _windows_drive_path(Path(directory)):
+            continue
+        found = shutil.which(binary, path=directory)
+        if found and not _windows_drive_path(Path(found)):
+            return found
+    return None
+
+
 def scan_agent(
     spec: AgentSpec,
     *,
@@ -307,7 +340,7 @@ def scan_agent(
     search_path = environment.get("PATH") if path is None else path
     found = None
     for binary in spec.binaries:
-        found = shutil.which(binary, path=search_path)
+        found = _which(binary, path=search_path)
         if found:
             break
     executable = Path(found) if found else None
@@ -431,7 +464,7 @@ def _package_update(executable: Path, packages: tuple[str, ...], *, uninstall: b
     for package in packages:
         if _json_string(prefix / "node_modules" / package / "package.json", "name") != package:
             continue
-        npm = _tool(prefix, "npm") or (Path(found) if (found := shutil.which("npm")) else None)
+        npm = _tool(prefix, "npm") or (Path(found) if (found := _which("npm")) else None)
         if npm:
             argv = (str(npm), "uninstall" if uninstall else "install", "--global", "--prefix", str(prefix), package if uninstall else f"{package}@latest")
             return UpdateCommand(argv, " ".join(argv))
@@ -503,7 +536,7 @@ def _winget_uninstall(resolved: Path, base: Path) -> tuple[UninstallPlan | None,
         identifier, separator, source = directory.partition("_")
         if not (identifier and separator and source):
             return None, ""
-        winget = shutil.which("winget")
+        winget = _which("winget")
         if not winget:
             return None, f"WinGet 패키지({identifier})이지만 winget 명령을 찾을 수 없습니다."
         argv = (winget, "uninstall", "--id", identifier, "--exact", "--purge", "--force", "--disable-interactivity", "--accept-source-agreements")
@@ -524,7 +557,7 @@ def install_command(status: AgentStatus) -> tuple[UpdateCommand | None, str]:
     if status.spec.key == "hermes":
         if sys.platform == "win32":
             # Windows 공식 설치는 install.ps1이며 %LOCALAPPDATA%\hermes에 설치하고 사용자 PATH·HERMES_HOME을 등록함.
-            shell = shutil.which("pwsh") or shutil.which("powershell")
+            shell = _which("pwsh") or _which("powershell")
             if not shell:
                 return None, "Hermes 설치에는 PowerShell이 필요합니다."
             # 스크립트 블록 호출 시 설치기가 exit 대신 LASTEXITCODE로 실패를 보고하기도 함.
@@ -534,14 +567,14 @@ def install_command(status: AgentStatus) -> tuple[UpdateCommand | None, str]:
                 "exit $LASTEXITCODE"
             )
             return UpdateCommand((shell, "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script), script), ""
-        if not shutil.which("curl") or not (bash := shutil.which("bash")):
+        if not _which("curl") or not (bash := _which("bash")):
             return None, "Hermes 설치에는 curl과 bash가 필요합니다."
         script = "curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash -s -- --non-interactive"
         return UpdateCommand((bash, "-o", "pipefail", "-c", script), script), ""
     package = PACKAGES.get(status.spec.key)
-    if package and (npm := shutil.which("npm")):
+    if package and (npm := _which("npm")):
         # Windows의 npm PowerShell 래퍼는 bun.cmd가 아닌 bun.exe를 직접 호출함.
-        if status.spec.key == "omp" and not shutil.which("bun.exe" if sys.platform == "win32" else "bun"):
+        if status.spec.key == "omp" and not _which("bun.exe" if sys.platform == "win32" else "bun"):
             return None, "OMP 설치에는 Bun이 필요합니다. https://bun.com/docs/installation 에 따라 설치하고 Bun 실행 파일 폴더를 PATH에 추가한 뒤 다시 실행하세요."
         argv = (npm, "install", "--global", f"{package}@latest")
         return UpdateCommand(argv, " ".join(argv)), ""
@@ -795,10 +828,10 @@ def update_command(status: AgentStatus, *, home: Path | None = None) -> tuple[Up
         return None, f"{spec.name} 설치 경로({status.executable.resolve()})에서 지원하는 업데이트 방식(npm/Bun/Homebrew)을 판별하지 못했습니다."
     if spec.key == "codex":
         resolved = status.executable.resolve()
-        if "node_modules" in resolved.parts and (npm := shutil.which("npm")):
+        if "node_modules" in resolved.parts and (npm := _which("npm")):
             argv = (npm, "install", "--global", "@openai/codex@latest")
             return UpdateCommand(argv, "npm install --global @openai/codex@latest"), ""
-        if (brew := shutil.which("brew")) and "Caskroom" in resolved.parts:
+        if (brew := _which("brew")) and "Caskroom" in resolved.parts:
             argv = (brew, "upgrade", "--cask", "codex")
             return UpdateCommand(argv, "brew upgrade --cask codex"), ""
         if brew and "Cellar" in resolved.parts:

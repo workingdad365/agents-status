@@ -156,6 +156,65 @@ class ProviderTests(unittest.TestCase):
 
 
 class DetectionTests(unittest.TestCase):
+    def test_wsl_ignores_windows_agents_and_preserves_config_status(self):
+        for spec in AGENTS:
+            with self.subTest(agent=spec.key), tempfile.TemporaryDirectory() as directory:
+                home = Path(directory)
+                env = {"PATH": "/mnt/c/nvm4w/nodejs:/mnt/d/tools"}
+                with patch("agents_status.core.sys.platform", "linux"), patch("agents_status.core.platform.release", return_value="6.6-microsoft-standard-WSL2"), patch("agents_status.core._version") as probe:
+                    status = scan_agent(spec, home=home, env=env)
+                    self.assertEqual(status.status, StatusKind.MISSING)
+                    self.assertIsNone(status.executable)
+                    (home / spec.config_root).mkdir(parents=True)
+                    status = scan_agent(spec, home=home, env=env)
+                    self.assertEqual(status.status, StatusKind.CONFIG_ONLY)
+                    probe.assert_not_called()
+
+    def test_wsl_finds_linux_agent_after_windows_path_and_symlink(self):
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            links = home / "links"
+            native = home / "bin"
+            links.mkdir()
+            native.mkdir()
+            windows = home / "windows"
+            windows.mkdir()
+            windows_executable = windows / "claude"
+            windows_executable.write_text("#!/bin/sh\nexit 0\n")
+            windows_executable.chmod(0o755)
+            symlink_or_skip(links / "claude", windows_executable)
+            executable = native / "claude"
+            executable.write_text("#!/bin/sh\nexit 0\n")
+            executable.chmod(0o755)
+            env = {"PATH": os.pathsep.join((str(windows), str(links), str(native)))}
+            with patch("agents_status.core.sys.platform", "linux"), patch("agents_status.core.platform.release", return_value="microsoft"), patch("agents_status.core._read", return_value=f"C: {windows} drvfs rw 0 0\n"), patch("agents_status.core._version", return_value="1"):
+                status = scan_agent(SPECS["claude"], home=home, env=env)
+            self.assertEqual(status.status, StatusKind.INSTALLED)
+            self.assertEqual(status.executable, executable)
+
+    def test_wsl_install_does_not_use_windows_npm(self):
+        status = AgentStatus(SPECS["claude"], StatusKind.MISSING, None, "-", "-")
+        with patch("agents_status.core.sys.platform", "linux"), patch("agents_status.core.platform.release", return_value="microsoft"), patch.dict(os.environ, {"PATH": "/mnt/c/nvm4w/nodejs"}):
+            command, reason = install_command(status)
+        self.assertIsNone(command)
+        self.assertIn("npm", reason)
+
+    def test_windows_drive_detection_supports_custom_mounts(self):
+        from agents_status.core import _windows_drive_path
+        mounts = "C: /windows/drive\\040c 9p rw,aname=drvfs;path=C: 0 0\nD: /drives/d drvfs rw 0 0\n"
+        with patch("agents_status.core._read", return_value=mounts):
+            self.assertTrue(_windows_drive_path(Path("/windows/drive c/tools/claude")))
+            self.assertTrue(_windows_drive_path(Path("/drives/d/tools/claude")))
+            self.assertFalse(_windows_drive_path(Path("/drives/data/claude")))
+            self.assertFalse(_windows_drive_path(Path("/usr/bin/claude")))
+
+    def test_non_wsl_keeps_normal_command_search(self):
+        from agents_status.core import _which
+        for system, release in (("win32", "microsoft"), ("linux", "6.6-generic"), ("darwin", "24")):
+            with self.subTest(system=system), patch("agents_status.core.sys.platform", system), patch("agents_status.core.platform.release", return_value=release), patch("shutil.which", return_value="/mnt/c/tools/claude") as which:
+                self.assertEqual(_which("claude", path="/mnt/c/tools"), "/mnt/c/tools/claude")
+                which.assert_called_once_with("claude", path="/mnt/c/tools")
+
     def test_windows_hermes_is_found_without_inherited_path(self):
         for custom_home in (False, True):
             for relative in ("bin/hermes.exe", "bin/hermes.cmd", "hermes-agent/venv/Scripts/hermes.exe"):
@@ -975,7 +1034,7 @@ class UninstallTests(unittest.IsolatedAsyncioTestCase):
             status = AgentStatus(SPECS["copilot"], StatusKind.INSTALLED, executable, "1.0.94", "github-copilot")
             winget = str(home / "winget.exe")
             with patch.dict(os.environ, {"LOCALAPPDATA": str(home / "AppData/Local")}):
-                with patch("shutil.which", side_effect=lambda name: winget if name == "winget" else None):
+                with patch("agents_status.core._which", side_effect=lambda name: winget if name == "winget" else None):
                     plan, reason = uninstall_plan(status, home=home)
                 self.assertEqual(reason, "")
                 self.assertEqual(plan.command.argv[:5], (winget, "uninstall", "--id", "GitHub.Copilot", "--exact"))
@@ -1014,7 +1073,7 @@ class UninstallTests(unittest.IsolatedAsyncioTestCase):
             status = AgentStatus(SPECS["copilot"], StatusKind.INSTALLED, executable, "1.0.95", "github-copilot")
             winget = str(home / "winget.exe")
             with patch.dict(os.environ, {"LOCALAPPDATA": str(home / "AppData/Local")}):
-                with patch("shutil.which", side_effect=lambda name: winget if name == "winget" else None):
+                with patch("agents_status.core._which", side_effect=lambda name: winget if name == "winget" else None):
                     plan, reason = uninstall_plan(status, home=home)
                 self.assertEqual(reason, "")
                 self.assertEqual(plan.command.argv[:5], (winget, "uninstall", "--id", "GitHub.Copilot", "--exact"))
@@ -1116,7 +1175,7 @@ class UninstallTests(unittest.IsolatedAsyncioTestCase):
                     tools = {"npm": "/bin/npm", "bun": "/bin/bun.cmd"} if platform == "win32" else {"npm": "/bin/npm"}
                     if available:
                         tools[runtime] = f"/bin/{runtime}"
-                    with patch("agents_status.core.sys.platform", platform), patch("shutil.which", side_effect=tools.get):
+                    with patch("agents_status.core.sys.platform", platform), patch("agents_status.core._which", side_effect=tools.get):
                         command, reason = install_command(status)
                     if available:
                         self.assertEqual(command.argv, (
