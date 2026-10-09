@@ -335,6 +335,12 @@ PACKAGES = {
 }
 
 
+def _codex_packages(home: Path | None = None) -> Path:
+    """Codex 공식 설치 스크립트가 standalone·app-server-daemon 패키지를 두는 디렉터리."""
+    base = Path.home() if home is None else home
+    return Path(os.environ.get("CODEX_HOME", str(base / ".codex"))) / "packages"
+
+
 def install_command(status: AgentStatus) -> tuple[UpdateCommand | None, str]:
     if status.spec.key == "hermes":
         if not shutil.which("curl") or not (bash := shutil.which("bash")):
@@ -386,6 +392,16 @@ def uninstall_plan(status: AgentStatus, *, home: Path | None = None) -> tuple[Un
     resolved = executable.resolve()
     if status.spec.key == "claude" and resolved.is_relative_to(base / ".local/share/claude"):
         return UninstallPlan(paths=(executable, base / ".local/share/claude")), ""
+    if status.spec.key == "codex" and resolved.is_relative_to(_codex_packages(base) / "standalone"):
+        # 공식 설치 스크립트는 ~/.local/bin/codex 링크(macOS는 codex-code-mode-host 링크 추가)와
+        # ~/.codex/packages 아래 standalone·app-server-daemon 패키지를 설치함.
+        packages = _codex_packages(base)
+        paths = [executable]
+        host = executable.parent / "codex-code-mode-host"
+        if host.is_symlink() and host.resolve().is_relative_to(packages / "standalone"):
+            paths.append(host)
+        paths.extend(root for root in (packages / "standalone", packages / "app-server-daemon") if root.is_dir())
+        return UninstallPlan(paths=tuple(paths)), ""
     if status.spec.key == "opencode" and executable == base / ".opencode/bin/opencode":
         return UninstallPlan(paths=(executable,)), ""
     if status.spec.key == "hermes":
@@ -433,10 +449,14 @@ async def run_uninstall(
     return CommandResult(0, "삭제를 완료했습니다.")
 
 
-def update_command(status: AgentStatus) -> tuple[UpdateCommand | None, str]:
+def update_command(status: AgentStatus, *, home: Path | None = None) -> tuple[UpdateCommand | None, str]:
     if not status.executable:
         return None, "실행 파일이 없어 업데이트할 수 없습니다."
     spec = status.spec
+    if spec.key == "codex" and status.executable.resolve().is_relative_to(_codex_packages(home) / "standalone"):
+        # 공식 설치 스크립트 설치는 codex update가 같은 스크립트를 비대화형으로 다시 실행하여 갱신함.
+        argv = (str(status.executable), "update")
+        return UpdateCommand(argv, "codex update"), ""
     if spec.update_args:
         argv = (str(status.executable), *spec.update_args)
         return UpdateCommand(argv, " ".join((status.executable.name, *spec.update_args))), ""

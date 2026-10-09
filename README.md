@@ -69,7 +69,7 @@ agents-status
 
 설치는 npm 전역 패키지를 사용하며 Hermes는 공식 설치 스크립트의 비대화형 모드를 사용한다. Antigravity 항목의 신규 설치 대상은 기존 감지 대상 중 Gemini CLI이다.
 
-삭제는 실제 설치 경로에서 npm/Bun/Homebrew를 판별하여 해당 패키지 관리자를 사용한다. 기본 경로의 Claude·OpenCode·Hermes 네이티브 설치와 `~/.local/bin`의 독립 실행 바이너리도 지원한다. Antigravity CLI(`agy`)는 공식 설치 스크립트가 설치한 단일 바이너리를 삭제하며, Windows에서는 `agy update`의 백업 파일이 남는 `%LOCALAPPDATA%\agy` 디렉터리를 함께 삭제한다. 판별되지 않는 설치는 사유를 표시한다. 프로그램 삭제가 실패하면 설정 삭제를 진행하지 않는다. 설정 삭제 대상 경로는 확인 창에 표시하며, 설정 디렉터리가 심볼릭 링크이면 링크만 삭제한다.
+삭제는 실제 설치 경로에서 npm/Bun/Homebrew를 판별하여 해당 패키지 관리자를 사용한다. 기본 경로의 Claude·OpenCode·Hermes 네이티브 설치와 `~/.local/bin`의 독립 실행 바이너리도 지원한다. Codex 공식 설치 스크립트 설치는 `~/.local/bin/codex` 링크(macOS는 `codex-code-mode-host` 링크 포함)와 `~/.codex/packages`의 `standalone`·`app-server-daemon` 패키지를 삭제한다. 이때 실행 중인 app-server 데몬 프로세스는 종료하지 않으므로, Windows에서 데몬이 실행 중이면 파일 잠금으로 삭제가 실패할 수 있다. Antigravity CLI(`agy`)는 공식 설치 스크립트가 설치한 단일 바이너리를 삭제하며, Windows에서는 `agy update`의 백업 파일이 남는 `%LOCALAPPDATA%\agy` 디렉터리를 함께 삭제한다. 판별되지 않는 설치는 사유를 표시한다. 프로그램 삭제가 실패하면 설정 삭제를 진행하지 않는다. 설정 삭제 대상 경로는 확인 창에 표시하며, 설정 디렉터리가 심볼릭 링크이면 링크만 삭제한다.
 
 ## 표시 정보
 
@@ -88,7 +88,7 @@ agents-status
 | 도구 | 프로바이더 조사 소스 | 개별 업데이트 |
 |---|---|---|
 | Claude | `~/.claude/settings.json`, 환경 변수 | `claude update` |
-| Codex CLI | `~/.codex/config.toml`, `auth.json` | npm/Homebrew 설치를 판별한 경우 |
+| Codex CLI | `~/.codex/config.toml`, `auth.json` | 공식 설치 스크립트 설치는 `codex update`, 그 외 npm/Homebrew 설치를 판별한 경우 |
 | Command Code | `~/.commandcode/config.json` | `<실행 파일> update` |
 | Copilot CLI | GitHub Copilot 고정 | `copilot update` |
 | OpenCode | 설정 모델 또는 최근 사용 모델 | `opencode upgrade` |
@@ -100,7 +100,7 @@ agents-status
 | Hermes | `~/.hermes/config.yaml` | `hermes update --yes` |
 | OpenClaw | `~/.openclaw/openclaw.json` | `openclaw update --yes` |
 
-자체 업데이트 명령이 없는 Codex는 실행 파일의 실제 경로에서 npm 또는 Homebrew 설치임이 확인된 경우에만 업데이트한다. Crush와 Gemini CLI(`gemini`로 감지된 경우)는 심볼릭 링크의 실제 경로와 패키지 정보를 이용해 npm/Bun/Homebrew 설치를 판별한다. npm은 원래 설치된 prefix의 npm을 사용하고 동일한 prefix에 업데이트한다. Homebrew는 실제 Cellar/Caskroom 경로의 패키지명을 사용한다. 설치 방식을 판별할 수 없거나 해당 설치의 패키지 관리자가 없으면 경로와 사유를 안내한다.
+Codex는 공식 설치 스크립트(`curl https://chatgpt.com/codex/install.sh | sh`)가 `~/.codex/packages/standalone`에 설치한 경우 `codex update`로 자체 업데이트한다. 이 명령은 같은 설치 스크립트를 비대화형으로 다시 실행한다. 그 외에는 실행 파일의 실제 경로에서 npm 또는 Homebrew 설치임이 확인된 경우에만 업데이트한다. Crush와 Gemini CLI(`gemini`로 감지된 경우)는 심볼릭 링크의 실제 경로와 패키지 정보를 이용해 npm/Bun/Homebrew 설치를 판별한다. npm은 원래 설치된 prefix의 npm을 사용하고 동일한 prefix에 업데이트한다. Homebrew는 실제 Cellar/Caskroom 경로의 패키지명을 사용한다. 설치 방식을 판별할 수 없거나 해당 설치의 패키지 관리자가 없으면 경로와 사유를 안내한다.
 
 ## 개발 및 테스트
 

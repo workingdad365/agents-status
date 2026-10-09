@@ -149,6 +149,23 @@ class UpdateTests(unittest.TestCase):
             command, _ = update_command(status)
         self.assertEqual(command.argv[-2:], ("--global", "@openai/codex@latest"))
 
+    def test_codex_standalone_install_uses_self_update(self):
+        # 공식 설치 스크립트는 ~/.local/bin/codex 링크를 ~/.codex/packages/standalone/current/codex로 연결함.
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            release = home / ".codex/packages/standalone/releases/0.162.0-x86_64-unknown-linux-musl"
+            (release / "bin").mkdir(parents=True)
+            (release / "bin/codex").touch()
+            current = home / ".codex/packages/standalone/current"
+            current.symlink_to(release)
+            executable = home / ".local/bin/codex"
+            executable.parent.mkdir(parents=True)
+            executable.symlink_to(current / "bin/codex")
+            status = AgentStatus(SPECS["codex"], StatusKind.INSTALLED, executable, "codex-cli 0.162.0", "openai")
+            command, _ = update_command(status, home=home)
+            self.assertEqual(command.argv, (str(executable), "update"))
+            self.assertEqual(command.display, "codex update")
+
     def test_omp_and_agy_self_update(self):
         for key, binary in (("omp", "omp"), ("antigravity", "agy"), ("antigravity", "agy.EXE")):
             with self.subTest(key=key):
@@ -456,6 +473,39 @@ class UninstallTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(result.returncode, 0)
             self.assertFalse(root.exists())
             self.assertFalse(executable.is_symlink())
+            self.assertTrue(config.exists())
+
+    async def test_codex_standalone_uninstall_removes_packages_and_links(self):
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            packages = home / ".codex/packages"
+            release = packages / "standalone/releases/0.162.0-x86_64-unknown-linux-musl"
+            (release / "bin").mkdir(parents=True)
+            (release / "bin/codex").touch()
+            (release / "bin/codex-code-mode-host").touch()
+            current = packages / "standalone/current"
+            current.symlink_to(release)
+            (packages / "app-server-daemon/releases").mkdir(parents=True)
+            executable = home / ".local/bin/codex"
+            executable.parent.mkdir(parents=True)
+            executable.symlink_to(current / "bin/codex")
+            host = home / ".local/bin/codex-code-mode-host"
+            host.symlink_to(current / "bin/codex-code-mode-host")
+            unrelated = home / ".local/bin/other"
+            unrelated.touch()
+            config = home / ".codex/config.toml"
+            config.touch()
+            status = AgentStatus(SPECS["codex"], StatusKind.INSTALLED, executable, "codex-cli 0.162.0", "openai")
+            plan, _ = uninstall_plan(status, home=home)
+            self.assertIsNone(plan.command)
+            self.assertEqual(plan.paths, (executable, host, packages / "standalone", packages / "app-server-daemon"))
+            result = await run_uninstall(plan)
+            self.assertEqual(result.returncode, 0)
+            self.assertFalse(packages.joinpath("standalone").exists())
+            self.assertFalse(packages.joinpath("app-server-daemon").exists())
+            self.assertFalse(executable.is_symlink())
+            self.assertFalse(host.is_symlink())
+            self.assertTrue(unrelated.exists())
             self.assertTrue(config.exists())
 
     async def test_agy_standalone_uninstall(self):
