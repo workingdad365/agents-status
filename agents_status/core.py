@@ -713,6 +713,10 @@ def uninstall_plan(status: AgentStatus, *, home: Path | None = None) -> tuple[Un
         if host.is_symlink() and host.resolve().is_relative_to(packages / "standalone"):
             paths.append(host)
         paths.extend(root for root in (packages / "standalone", packages / "app-server-daemon") if root.is_dir())
+        # 데몬 상태 폴더(pid·로그·lock)가 남으면 재설치 후 daemon start가 기존 설치 손상으로 판단해 설치하지 않음.
+        state = packages.parent / "app-server-daemon"
+        if state.is_dir():
+            paths.append(state)
         prepare = None
         if (packages / "app-server-daemon").is_dir():
             # 데몬 패키지를 지워도 실행 중인 데몬은 남아 지워진 경로의 codex-code-mode-host를 찾으므로 먼저 종료함.

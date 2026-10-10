@@ -759,6 +759,9 @@ class UninstallTests(unittest.IsolatedAsyncioTestCase):
             current = packages / "standalone/current"
             symlink_or_skip(current, release)
             (packages / "app-server-daemon/releases").mkdir(parents=True)
+            state = home / ".codex/app-server-daemon"
+            state.mkdir()
+            (state / "daemon-updater.stderr.log").touch()
             executable = home / ".local/bin/codex"
             executable.parent.mkdir(parents=True)
             symlink_or_skip(executable, current / "bin/codex")
@@ -771,7 +774,7 @@ class UninstallTests(unittest.IsolatedAsyncioTestCase):
             status = AgentStatus(SPECS["codex"], StatusKind.INSTALLED, executable, "codex-cli 0.162.0", "openai")
             plan, _ = uninstall_plan(status, home=home)
             self.assertIsNone(plan.command)
-            self.assertEqual(plan.paths, (executable, host, packages / "standalone", packages / "app-server-daemon"))
+            self.assertEqual(plan.paths, (executable, host, packages / "standalone", packages / "app-server-daemon", state))
             self.assertEqual(plan.prepare.argv, (str(executable), "app-server", "daemon", "stop"))
             result = await run_uninstall(plan)
             self.assertEqual(result.returncode, 0)
@@ -779,6 +782,7 @@ class UninstallTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(stopped.read_text().strip(), "app-server daemon stop")
             self.assertFalse(packages.joinpath("standalone").exists())
             self.assertFalse(packages.joinpath("app-server-daemon").exists())
+            self.assertFalse(state.exists())
             self.assertFalse(executable.is_symlink())
             self.assertFalse(host.is_symlink())
             self.assertTrue(unrelated.exists())
