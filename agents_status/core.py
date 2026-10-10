@@ -64,10 +64,13 @@ class UninstallPlan:
     paths: tuple[Path, ...] = ()
     # 값이 삭제한 경로를 가리키면 함께 제거할 사용자 환경 변수(Windows 전용).
     variables: tuple[str, ...] = ()
+    # 삭제 전에 실행할 정리 명령(실행 중인 데몬 종료 등). 실패해도 삭제는 계속함.
+    prepare: UpdateCommand | None = None
 
     @property
     def display(self) -> str:
-        lines = [self.command.display] if self.command else []
+        lines = [self.prepare.display] if self.prepare else []
+        lines += [self.command.display] if self.command else []
         if self.paths:
             lines.append("삭제: " + ", ".join(map(str, self.paths)))
             if sys.platform == "win32":
@@ -710,7 +713,12 @@ def uninstall_plan(status: AgentStatus, *, home: Path | None = None) -> tuple[Un
         if host.is_symlink() and host.resolve().is_relative_to(packages / "standalone"):
             paths.append(host)
         paths.extend(root for root in (packages / "standalone", packages / "app-server-daemon") if root.is_dir())
-        return UninstallPlan(paths=tuple(paths)), ""
+        prepare = None
+        if (packages / "app-server-daemon").is_dir():
+            # 데몬 패키지를 지워도 실행 중인 데몬은 남아 지워진 경로의 codex-code-mode-host를 찾으므로 먼저 종료함.
+            argv = (str(executable), "app-server", "daemon", "stop")
+            prepare = UpdateCommand(argv, "codex app-server daemon stop")
+        return UninstallPlan(paths=tuple(paths), prepare=prepare), ""
     if status.spec.key == "opencode" and executable == base / ".opencode/bin/opencode":
         return UninstallPlan(paths=(executable,)), ""
     if (
@@ -929,6 +937,10 @@ async def run_uninstall(
     settings: Sequence[Path] = (),
     on_output: Callable[[str], None] | None = None,
 ) -> CommandResult:
+    if plan.prepare:
+        result = await run_update(plan.prepare, timeout=60, on_output=on_output)
+        if result.returncode and on_output is not None:
+            on_output(f"삭제 전 정리 명령 실패(삭제는 계속함): {plan.prepare.display}")
     if plan.command:
         result = await run_update(plan.command, on_output=on_output)
         if result.returncode:

@@ -751,7 +751,10 @@ class UninstallTests(unittest.IsolatedAsyncioTestCase):
             packages = home / ".codex/packages"
             release = packages / "standalone/releases/0.162.0-x86_64-unknown-linux-musl"
             (release / "bin").mkdir(parents=True)
-            (release / "bin/codex").touch()
+            # 삭제 전 데몬 종료 명령의 인자를 기록하는 가짜 실행 파일
+            stopped = home / "stopped"
+            (release / "bin/codex").write_text(f'#!/bin/sh\necho "$@" > "{stopped}"\n')
+            (release / "bin/codex").chmod(0o755)
             (release / "bin/codex-code-mode-host").touch()
             current = packages / "standalone/current"
             symlink_or_skip(current, release)
@@ -769,14 +772,28 @@ class UninstallTests(unittest.IsolatedAsyncioTestCase):
             plan, _ = uninstall_plan(status, home=home)
             self.assertIsNone(plan.command)
             self.assertEqual(plan.paths, (executable, host, packages / "standalone", packages / "app-server-daemon"))
+            self.assertEqual(plan.prepare.argv, (str(executable), "app-server", "daemon", "stop"))
             result = await run_uninstall(plan)
             self.assertEqual(result.returncode, 0)
+            if sys.platform != "win32":
+                self.assertEqual(stopped.read_text().strip(), "app-server daemon stop")
             self.assertFalse(packages.joinpath("standalone").exists())
             self.assertFalse(packages.joinpath("app-server-daemon").exists())
             self.assertFalse(executable.is_symlink())
             self.assertFalse(host.is_symlink())
             self.assertTrue(unrelated.exists())
             self.assertTrue(config.exists())
+
+    async def test_uninstall_continues_when_prepare_fails(self):
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / "target"
+            target.touch()
+            prepare = UpdateCommand((str(Path(directory) / "missing"),), "missing")
+            lines: list[str] = []
+            result = await run_uninstall(UninstallPlan(paths=(target,), prepare=prepare), on_output=lines.append)
+            self.assertEqual(result.returncode, 0)
+            self.assertFalse(target.exists())
+            self.assertTrue(any("정리 명령 실패" in line for line in lines))
 
     async def test_pi_managed_install_uninstall_removes_links_launcher_and_install_root(self):
         marker = {"kind": "pi-managed-install", "schemaVersion": 1, "layout": "releases-v1"}
