@@ -527,7 +527,7 @@ PACKAGES = {
     "codex": "@openai/codex",
     "commandcode": "command-code",
     "copilot": "@github/copilot",
-    "opencode": "opencode-ai",
+    "opencode": "@opencode/cli",
     "kilo": "@kilocode/cli",
     "omp": "@oh-my-pi/pi-coding-agent",
     "pi": "@earendil-works/pi-coding-agent",
@@ -538,7 +538,7 @@ PACKAGES = {
 
 # npm 패키지 이름이 바뀐 도구는 두 이름 모두 삭제 판별 대상으로 삼음.
 _PACKAGE_ALIASES = {
-    "opencode": ("@opencode/cli",),
+    "opencode": ("opencode-ai",),
     "pi": ("@mariozechner/pi-coding-agent",),
 }
 

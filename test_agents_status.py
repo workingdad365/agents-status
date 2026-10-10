@@ -1408,7 +1408,7 @@ class UninstallTests(unittest.IsolatedAsyncioTestCase):
                 winreg.DeleteKey(winreg.HKEY_CURRENT_USER, r"Software\agents-status-test")
 
     async def test_native_wrapper_install_allows_required_postinstall(self):
-        for key, package in (("claude", "@anthropic-ai/claude-code"), ("opencode", "opencode-ai")):
+        for key, package in (("claude", "@anthropic-ai/claude-code"), ("opencode", "@opencode/cli")):
             for system in ("linux", "win32", "darwin"):
                 with self.subTest(agent=key, system=system), patch("agents_status.core.sys.platform", system), patch("agents_status.core._which", return_value="/bin/npm"):
                     status = AgentStatus(SPECS[key], StatusKind.MISSING, None, "-", "-")
