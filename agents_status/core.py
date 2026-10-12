@@ -277,6 +277,7 @@ AGENTS: tuple[AgentSpec, ...] = (
     AgentSpec("kilo", "Kilo", ("kilo",), ".config/kilo", _opencode_like(".config/kilo", ("kilo.jsonc", "kilo.json"), require_qualified_model=True), update_args=("upgrade",)),
     AgentSpec("omp", "OMP", ("omp",), ".omp", _omp, update_args=("update",)),
     AgentSpec("pi", "Pi", ("pi",), ".pi", _pi, update_args=("update", "--self")),
+    AgentSpec("pi-bolt", "Pi-Bolt", ("pi-bolt",), ".pi", _pi, update_args=("update",)),
     AgentSpec("antigravity", "Antigravity", ("agy", "antigravity", "gemini"), ".gemini", _fixed("google")),
     AgentSpec("crush", "Crush", ("crush",), ".config/crush", _crush),
     AgentSpec("hermes", "Hermes", ("hermes",), ".hermes", _hermes, update_args=("update", "--yes")),
@@ -388,6 +389,11 @@ def scan_agent(
             )
         elif spec.key == "omp":
             candidates = (_omp_install_dir(base, environment) / "omp.exe",)
+        elif spec.key == "pi-bolt":
+            root = Path(environment.get("PIBOLT_INSTALL") or str(base / ".pi-bolt"))
+            variant = environment.get("PIBOLT_VARIANT") or "x64"
+            variants = tuple(dict.fromkeys((variant, "x64", "x64-baseline", "x64-jit")))
+            candidates = tuple(root / f"pi-bolt-win32-{item}/pi-bolt.exe" for item in variants)
         executable = next((candidate for candidate in candidates if candidate.is_file()), None)
     provider = spec.provider_probe(base, environment) if executable or config_root.is_dir() else "-"
     if executable:
@@ -531,6 +537,7 @@ PACKAGES = {
     "kilo": "@kilocode/cli",
     "omp": "@oh-my-pi/pi-coding-agent",
     "pi": "@earendil-works/pi-coding-agent",
+    "pi-bolt": "pi-bolt",
     "antigravity": "@google/gemini-cli",
     "crush": "@charmland/crush",
     "openclaw": "openclaw",
@@ -642,7 +649,7 @@ def install_command(status: AgentStatus) -> tuple[UpdateCommand | None, str]:
     package = PACKAGES.get(status.spec.key)
     if package and (npm := _which("npm")):
         # npm 12에서 Claude·OpenCode의 필수 바이너리 배치 스크립트 실행을 허용함.
-        scripts = (f"--allow-scripts={package}",) if status.spec.key in ("claude", "opencode") else ()
+        scripts = (f"--allow-scripts={package}",) if status.spec.key in ("claude", "opencode", "pi-bolt") else ()
         argv = (npm, "install", "--global", *scripts, f"{package}@latest")
         return UpdateCommand(argv, " ".join(argv)), ""
     if package:
@@ -795,6 +802,17 @@ def uninstall_plan(status: AgentStatus, *, home: Path | None = None) -> tuple[Un
             if link is not None and link not in launchers and link.is_symlink()
         )
         return UninstallPlan(paths=(*links, *launchers, root)), ""
+    if status.spec.key == "pi-bolt" and "node_modules" not in resolved.parts:
+        # 공식 설치는 플랫폼별 디렉터리에 바이너리와 부속 파일을 함께 둠.
+        root = Path(os.environ.get("PIBOLT_INSTALL") or str(base / ".pi-bolt")).resolve()
+        if (
+            resolved.parent.parent == root
+            and re.fullmatch(r"pi-bolt-(?:linux|darwin|win32)-(?:x64|x64-baseline|x64-jit|arm64|arm64-jit)", resolved.parent.name)
+            and resolved.name in ("pi", "pi-bolt.exe")
+            and _is_native_binary(resolved, _PE_MAGIC + _UNIX_MAGIC)
+        ):
+            links = (executable,) if executable.is_symlink() else ()
+            return UninstallPlan(paths=(*links, resolved.parent)), ""
     if executable.parent == base / ".local/bin" and not executable.is_symlink() and "node_modules" not in resolved.parts:
         # 독립 실행 바이너리만 제거하며 스크립트 기반 설치는 별도 판별이 필요함.
         if _is_native_binary(executable, _UNIX_MAGIC):

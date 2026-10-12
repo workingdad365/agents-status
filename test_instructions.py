@@ -45,13 +45,14 @@ class InstructionsTests(unittest.TestCase):
             "commandcode": ".commandcode/AGENTS.md", "copilot": ".copilot/copilot-instructions.md",
             "opencode": ".config/opencode/AGENTS.md", "kilo": ".config/kilo/AGENTS.md",
             "omp": ".omp/agent/AGENTS.md", "pi": ".pi/agent/AGENTS.md",
+            "pi-bolt": ".pi/agent/AGENTS.md",
             "antigravity": ".gemini/GEMINI.md", "crush": ".config/crush/CRUSH.md",
         }
         for key in destinations:
             (self.home / SPECS[key].config_root).mkdir(parents=True, exist_ok=True)
         old = self.write(destinations["claude"], "기존 지침")
         results = self.sync(*destinations)
-        self.assertEqual([result.outcome for result in results], ["copy"] * 10)
+        self.assertEqual([result.outcome for result in results], ["copy"] * len(destinations))
         for relative in destinations.values():
             self.assertEqual((self.home / relative).read_bytes(), self.source.read_bytes())
         self.assertNotIn("기존 지침", old.read_text(encoding="utf-8"))
@@ -65,7 +66,7 @@ class InstructionsTests(unittest.TestCase):
 
     def test_all_agents_are_skipped_without_config_directories(self):
         results = self.sync()
-        self.assertEqual(len(results), 12)
+        self.assertEqual(len(results), len(AGENTS))
         self.assertTrue(all(result.outcome == "skip" for result in results))
         self.assertEqual(list(self.home.iterdir()), [self.source])
 
@@ -250,7 +251,7 @@ class SyncAppTests(unittest.IsolatedAsyncioTestCase):
                     await app.workers.wait_for_complete()
                     self.assertEqual((home / ".codex/AGENTS.md").read_text(encoding="utf-8"), SOURCE)
                     log = "\n".join(line.text for line in app.query_one(RichLog).lines)
-                    self.assertIn("2개 작성, 10개 건너뜀, 0개 실패", log)
+                self.assertIn(f"2개 작성, {len(AGENTS) - 2}개 건너뜀, 0개 실패", log)
 
     async def test_sync_disables_conflicting_actions_until_finished(self):
         started = threading.Event()

@@ -156,6 +156,45 @@ class ProviderTests(unittest.TestCase):
 
 
 class DetectionTests(unittest.TestCase):
+    def test_pi_bolt_windows_native_detection_and_removal_preserve_shared_pi(self):
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            executable = home / ".pi-bolt/pi-bolt-win32-x64-jit/pi-bolt.exe"
+            executable.parent.mkdir(parents=True)
+            executable.write_bytes(b"MZ\x00\x00")
+            settings = home / ".pi/agent/settings.json"
+            settings.parent.mkdir(parents=True)
+            settings.write_text('{"defaultProvider": "openrouter"}', encoding="utf-8")
+            env = {"PATH": "", "PIBOLT_VARIANT": "x64-jit"}
+            with patch("agents_status.core.sys.platform", "win32"), patch.dict(os.environ, env, clear=True), patch("agents_status.core._version", return_value="0.8.5"):
+                status = scan_agent(SPECS["pi-bolt"], home=home, env=env)
+                self.assertEqual(status.executable, executable)
+                self.assertEqual(status.provider, "openrouter")
+                plan, reason = uninstall_plan(status, home=home)
+            self.assertEqual(reason, "")
+            self.assertEqual(plan.paths, (executable.parent,))
+            self.assertEqual(config_paths(status.spec, home=home), (home / ".pi",))
+            command, reason = update_command(status)
+            self.assertEqual(command.argv, (str(executable), "update"))
+
+    def test_pi_bolt_native_symlink_removal_and_npm_install(self):
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            binary = home / ".pi-bolt/pi-bolt-linux-x64/pi"
+            binary.parent.mkdir(parents=True)
+            binary.write_bytes(b"\x7fELF")
+            link = home / ".local/bin/pi-bolt"
+            link.parent.mkdir(parents=True)
+            symlink_or_skip(link, binary)
+            status = AgentStatus(SPECS["pi-bolt"], StatusKind.INSTALLED, link, "0.8.5", "unknown")
+            with patch.dict(os.environ, {}, clear=True), patch("agents_status.core._which", return_value=None):
+                plan, reason = uninstall_plan(status, home=home)
+            self.assertEqual(reason, "")
+            self.assertEqual(plan.paths, (link, binary.parent))
+            with patch("agents_status.core._which", return_value="npm"):
+                command, reason = install_command(status)
+            self.assertEqual(command.argv, ("npm", "install", "--global", "--allow-scripts=pi-bolt", "pi-bolt@latest"))
+
     def test_wsl_ignores_windows_agents_and_preserves_config_status(self):
         for spec in AGENTS:
             with self.subTest(agent=spec.key), tempfile.TemporaryDirectory() as directory:

@@ -22,6 +22,7 @@ DESTINATIONS = {
     "kilo": "AGENTS.md",
     "omp": "agent/AGENTS.md",
     "pi": "agent/AGENTS.md",
+    "pi-bolt": "agent/AGENTS.md",
     "antigravity": "GEMINI.md",
     "crush": "CRUSH.md",
     "hermes": "SOUL.md",

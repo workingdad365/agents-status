@@ -126,6 +126,8 @@ class ConfirmDelete(ModalScreen[bool | None]):
             yield Label(f"[b]{self.status.spec.name}[/b] 삭제 시 설정도 삭제하시겠습니까? (Y/N)")
             yield Static(self.plan.display, markup=False)
             yield Static("Y: 아래 설정·인증·사용 기록까지 삭제\n" + "\n".join(map(str, config_paths(self.status.spec))), markup=False)
+            if self.status.spec.key in ("pi", "pi-bolt"):
+                yield Static("Pi와 Pi-Bolt는 위 설정을 공유합니다.")
             yield Static("N: 설정을 보존하고 프로그램만 삭제")
             with Horizontal():
                 yield Button("취소", id="cancel-delete")
