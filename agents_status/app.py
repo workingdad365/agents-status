@@ -253,6 +253,7 @@ class AgentsStatusApp(App[None]):
 
     def _render_table(self) -> None:
         table = self.query_one(DataTable)
+        selected_key = table.coordinate_to_cell_key(table.cursor_coordinate).row_key if table.row_count else None
         table.clear()
         colors = {
             StatusKind.INSTALLED: "green",
@@ -266,6 +267,8 @@ class AgentsStatusApp(App[None]):
                 status.spec.name, status.version, status.provider, path,
                 key=status.spec.key,
             )
+        if selected_key in table.rows:
+            table.move_cursor(row=table.get_row_index(selected_key))
         counts = {kind: sum(item.status == kind for item in self.statuses) for kind in StatusKind}
         self.query_one("#summary", Static).update(
             f"[b]합계 {len(self.statuses)}개[/b]  "
