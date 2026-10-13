@@ -103,6 +103,24 @@ class ConfirmUpdate(ModalScreen[bool]):
         self.dismiss(True)
 
 
+class ConfirmQuit(ConfirmUpdate):
+    BINDINGS = [Binding("escape", "keep_running", "계속 실행", show=False)]
+
+    def __init__(self) -> None:
+        super().__init__("진행 중인 작업", "", "중단 후 종료")
+
+    def compose(self) -> ComposeResult:
+        with Vertical():
+            yield Label("작업이 진행 중입니다. 중단하고 종료하시겠습니까?")
+            yield Static("이미 적용된 변경은 롤백되지 않습니다.\n업데이트 중단 시 설치 상태를 별도로 확인해야 합니다.")
+            with Horizontal():
+                yield Button("계속 실행", id="cancel", variant="primary")
+                yield Button("중단 후 종료", id="confirm", variant="error")
+
+    def action_keep_running(self) -> None:
+        self.dismiss(False)
+
+
 class ConfirmDelete(ModalScreen[bool | None]):
     DEFAULT_CSS = """
     ConfirmDelete { align: center middle; background: $background 70%; }
@@ -186,6 +204,7 @@ class AgentsStatusApp(App[None]):
         super().__init__()
         self.statuses: list[AgentStatus] = []
         self.busy = False
+        self._quitting = False
         self.instructions_source = (instructions_source if instructions_source is not None else default_instructions_path()).expanduser().resolve()
 
     def compose(self) -> ComposeResult:
@@ -355,7 +374,8 @@ class AgentsStatusApp(App[None]):
             self.query_one("#activity", Label).update("")
             self.busy = False
             self._set_buttons(False)
-            self.load_statuses()
+            if not self._quitting:
+                self.load_statuses()
 
     @on(Button.Pressed, "#refresh")
     def refresh_pressed(self) -> None:
@@ -364,6 +384,23 @@ class AgentsStatusApp(App[None]):
     @on(Button.Pressed, "#update")
     def update_pressed(self) -> None:
         self.action_update()
+
+    async def action_quit(self) -> None:
+        if self._quitting or isinstance(self.screen, ConfirmQuit):
+            return
+        if self.busy:
+            self.push_screen(ConfirmQuit(), self._confirm_quit)
+        else:
+            self.exit()
+
+    async def _confirm_quit(self, confirmed: bool) -> None:
+        if not confirmed:
+            return
+        self._quitting = True
+        workers = list(self.workers)
+        self.workers.cancel_all()
+        await asyncio.gather(*(worker.wait() for worker in workers), return_exceptions=True)
+        self.exit()
 
     def action_refresh(self) -> None:
         if not self.busy:
@@ -400,11 +437,23 @@ class AgentsStatusApp(App[None]):
         log.write(f"[yellow]{operation}를 시작했습니다. 완료될 때까지 기다려 주세요.[/yellow]")
         self.query_one("#progress", LoadingIndicator).styles.display = "block"
         self.query_one("#activity", Label).update(f"{status.spec.name} {operation} 진행 중…")
+        warned = False
+
+        def receive_output(line: str) -> None:
+            nonlocal warned
+            log.write(Text.from_ansi(line))
+            if status.spec.key == "openclaw" and not warned and "Could not inspect OpenClaw processes" in line:
+                warned = True
+                log.write(Text(
+                    "OpenClaw의 프로세스 검사에 실패했습니다. 다른 격리 환경의 실행 경로를 "
+                    "해석하지 못한 경우일 수 있습니다. still running은 진행률이 아니며, "
+                    "package-install 성공만으로 업데이트 완료를 의미하지 않습니다. "
+                    "임시 런타임을 삭제하지 말고 OpenClaw 상태를 확인해 주세요."
+                ))
+                self.notify("OpenClaw 내부 프로세스 검사 오류: 로그를 확인해 주세요.", severity="warning", timeout=10)
+
         try:
-            result = await run_update(
-                command,
-                on_output=lambda line: log.write(Text.from_ansi(line)),
-            )
+            result = await run_update(command, on_output=receive_output)
             if result.returncode == 0:
                 self.notify(f"{operation}를 완료했습니다.", title=status.spec.name)
                 log.write(f"[green]{operation}를 완료했습니다.[/green]")
@@ -416,7 +465,8 @@ class AgentsStatusApp(App[None]):
             self.query_one("#activity", Label).update("")
             self.busy = False
             self._set_buttons(False)
-            self.load_statuses()
+            if not self._quitting:
+                self.load_statuses()
 
 
 def main() -> None:

@@ -12,7 +12,7 @@ from unittest.mock import AsyncMock, patch
 from rich.text import Text
 from textual.widgets import Button, DataTable, RichLog
 
-from agents_status.app import AgentsStatusApp, ConfirmDelete, ConfirmUpdate, platform_name
+from agents_status.app import AgentsStatusApp, ConfirmDelete, ConfirmQuit, ConfirmUpdate, platform_name
 from agents_status.core import (
     AGENTS, AgentStatus, CommandResult, StatusKind, UninstallPlan, UpdateCommand,
     config_paths, install_command, run_uninstall, run_update, scan_agent, uninstall_plan, update_command,
@@ -625,6 +625,110 @@ class AppTests(unittest.IsolatedAsyncioTestCase):
         result = await task
         self.assertEqual(result.returncode, 0)
         self.assertEqual(lines, ["시작", "완료"])
+
+
+class UpdateInterruptionTests(unittest.IsolatedAsyncioTestCase):
+    async def test_busy_quit_requires_confirmation(self):
+        with patch("agents_status.app.scan_agents", AsyncMock(return_value=[])):
+            app = AgentsStatusApp()
+            async with app.run_test() as pilot:
+                await pilot.pause()
+                app.busy = True
+                await pilot.press("q")
+                self.assertIsInstance(app.screen, ConfirmQuit)
+                await pilot.press("escape")
+                self.assertNotIsInstance(app.screen, ConfirmQuit)
+                await pilot.press("q")
+                with patch.object(app, "exit") as exit_app:
+                    await pilot.click("#confirm")
+                    await pilot.pause()
+                    exit_app.assert_called_once()
+                app.busy = False
+
+    async def test_confirmed_quit_waits_for_command_cleanup(self):
+        started = asyncio.Event()
+        cleaned = asyncio.Event()
+        status = AgentStatus(SPECS["openclaw"], StatusKind.INSTALLED, Path("/bin/openclaw"), "1", "-")
+
+        async def update(*args, **kwargs):
+            started.set()
+            try:
+                await asyncio.sleep(60)
+            finally:
+                await asyncio.sleep(0.05)
+                cleaned.set()
+
+        with patch("agents_status.app.scan_agents", AsyncMock(return_value=[status])) as scan, patch("agents_status.app.run_update", update):
+            app = AgentsStatusApp()
+            async with app.run_test() as pilot:
+                await pilot.pause()
+                app.update_agent(status, UpdateCommand(("openclaw", "update"), "openclaw update"))
+                await asyncio.wait_for(started.wait(), 5)
+                await pilot.press("q")
+                with patch.object(app, "exit", side_effect=lambda: self.assertTrue(cleaned.is_set())) as exit_app:
+                    await pilot.click("#confirm")
+                    await pilot.pause()
+                    exit_app.assert_called_once()
+                self.assertEqual(scan.await_count, 1)
+
+    async def test_openclaw_inspection_warning_is_shown_once(self):
+        status = AgentStatus(SPECS["openclaw"], StatusKind.INSTALLED, Path("/bin/openclaw"), "1", "-")
+
+        async def update(command, *, on_output):
+            for _ in range(2):
+                on_output("Could not inspect OpenClaw processes: could not resolve script /usr/local/bin/n8n")
+            return CommandResult(1, "")
+
+        with patch("agents_status.app.scan_agents", AsyncMock(return_value=[status])), patch("agents_status.app.run_update", update):
+            app = AgentsStatusApp()
+            async with app.run_test() as pilot:
+                await pilot.pause()
+                worker = app.update_agent(status, UpdateCommand(("openclaw", "update"), "openclaw update"))
+                await worker.wait()
+                text = "\n".join(line.text for line in app.query_one("#log", RichLog).lines)
+                self.assertEqual(text.count("OpenClaw의 프로세스 검사에 실패했습니다."), 1)
+
+    @unittest.skipUnless(sys.platform == "linux", "Linux 프로세스 상태 검사")
+    async def test_cancel_and_timeout_kill_descendants(self):
+        for cancel in (True, False):
+            with self.subTest(cancel=cancel), tempfile.TemporaryDirectory() as directory:
+                marker = Path(directory, "child-pid")
+                ready = asyncio.Event()
+                command = UpdateCommand((sys.executable, "-c",
+                    "import os, subprocess, sys, time; "
+                    "child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)']); "
+                    f"open({str(marker)!r}, 'w').write(str(child.pid)); "
+                    "print(os.getcwd(), flush=True); time.sleep(60)"), "tree test")
+                lines = []
+
+                def receive(line):
+                    lines.append(line)
+                    ready.set()
+
+                task = asyncio.create_task(run_update(command, timeout=1 if not cancel else 60, on_output=receive))
+                try:
+                    await asyncio.wait_for(ready.wait(), 5)
+                    pid = int(marker.read_text())
+                    if cancel:
+                        task.cancel()
+                        with self.assertRaises(asyncio.CancelledError):
+                            await asyncio.wait_for(task, 5)
+                    else:
+                        result = await asyncio.wait_for(task, 5)
+                        self.assertEqual(result.returncode, 124)
+                        self.assertIn("롤백되지", result.output)
+                    self.assertFalse(Path(lines[0]).exists())
+                    for _ in range(100):
+                        proc = Path(f"/proc/{pid}/stat")
+                        if not proc.exists() or proc.read_text().split(") ", 1)[1].startswith("Z"):
+                            break
+                        await asyncio.sleep(0.01)
+                    else:
+                        self.fail("업데이트 하위 프로세스가 남아 있음")
+                finally:
+                    if not task.done():
+                        task.cancel()
+                        await asyncio.gather(task, return_exceptions=True)
 
 
 class WorkingDirectoryTests(unittest.IsolatedAsyncioTestCase):

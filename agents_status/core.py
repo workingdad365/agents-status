@@ -10,6 +10,7 @@ import platform
 from pathlib import Path, PureWindowsPath
 import re
 import shutil
+import signal
 import stat
 import subprocess
 import sys
@@ -1018,6 +1019,31 @@ def update_command(status: AgentStatus, *, home: Path | None = None) -> tuple[Up
     return None, "이 도구는 설치 방식별 업데이트가 달라 자동 업데이트를 지원하지 않습니다."
 
 
+async def _kill_update_tree(process: asyncio.subprocess.Process) -> None:
+    """취소된 명령의 프로세스 트리를 정리함. 별도 세션으로 분리된 프로세스는 제외함."""
+    if os.name == "posix":
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+    elif process.returncode is None:
+        try:
+            killer = await asyncio.create_subprocess_exec(
+                "taskkill", "/PID", str(process.pid), "/T", "/F",
+                stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
+            )
+            await killer.wait()
+        except OSError:
+            pass
+        finally:
+            if process.returncode is None:
+                try:
+                    process.kill()
+                except ProcessLookupError:
+                    pass
+    await process.wait()
+
+
 async def run_update(
     command: UpdateCommand,
     timeout: float = 600,
@@ -1033,6 +1059,7 @@ async def run_update(
             stdin=asyncio.subprocess.DEVNULL,
             cwd=scratch.name,
             env={**os.environ, "NO_COLOR": "1", "PYTHONIOENCODING": "utf-8"},
+            start_new_session=os.name == "posix",
         )
 
         async def consume_output() -> str:
@@ -1057,11 +1084,14 @@ async def run_update(
             return "".join(output_parts).strip()
 
         output = await asyncio.wait_for(consume_output(), timeout=timeout)
+    except asyncio.CancelledError:
+        if process is not None:
+            await _kill_update_tree(process)
+        raise
     except asyncio.TimeoutError:
         if process is not None:
-            process.kill()
-            await process.wait()
-        message = f"명령 실행 제한 시간({timeout:g}초)을 초과했습니다."
+            await _kill_update_tree(process)
+        message = f"명령 실행 제한 시간({timeout:g}초)을 초과하여 중단했습니다. 변경 사항은 롤백되지 않으므로 설치 상태를 확인해 주세요."
         if on_output is not None:
             on_output(message)
         return CommandResult(124, message)
