@@ -279,7 +279,7 @@ AGENTS: tuple[AgentSpec, ...] = (
     AgentSpec("omp", "OMP", ("omp",), ".omp", _omp, update_args=("update",)),
     AgentSpec("pi", "Pi", ("pi",), ".pi", _pi, update_args=("update", "--self")),
     AgentSpec("pi-bolt", "Pi-Bolt", ("pi-bolt",), ".pi", _pi, update_args=("update",)),
-    AgentSpec("antigravity", "Antigravity", ("agy", "antigravity", "gemini"), ".gemini", _fixed("google")),
+    AgentSpec("antigravity", "Antigravity", ("agy",), ".gemini", _fixed("google")),
     AgentSpec("crush", "Crush", ("crush",), ".config/crush", _crush),
     AgentSpec("hermes", "Hermes", ("hermes",), ".hermes", _hermes, update_args=("update", "--yes")),
     AgentSpec("openclaw", "OpenClaw", ("openclaw",), ".openclaw", _openclaw, update_args=("update", "--yes")),
@@ -388,6 +388,8 @@ def scan_agent(
                 config_root / "bin/hermes.cmd",
                 config_root / "hermes-agent/venv/Scripts/hermes.exe",
             )
+        elif spec.key == "antigravity":
+            candidates = (Path(environment.get("LOCALAPPDATA", str(base / "AppData/Local"))) / "agy/bin/agy.exe",)
         elif spec.key == "omp":
             candidates = (_omp_install_dir(base, environment) / "omp.exe",)
         elif spec.key == "pi-bolt":
@@ -396,6 +398,10 @@ def scan_agent(
             variants = tuple(dict.fromkeys((variant, "x64", "x64-baseline", "x64-jit")))
             candidates = tuple(root / f"pi-bolt-win32-{item}/pi-bolt.exe" for item in variants)
         executable = next((candidate for candidate in candidates if candidate.is_file()), None)
+    if executable is None and spec.key == "antigravity" and sys.platform != "win32":
+        candidate = base / ".local/bin/agy"
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            executable = candidate
     provider = spec.provider_probe(base, environment) if executable or config_root.is_dir() else "-"
     if executable:
         # 버전 조회도 홈 디렉터리(기본) 또는 지정한 디렉터리에서 실행하여 프로젝트 디렉터리 오염을 막음.
@@ -539,7 +545,6 @@ PACKAGES = {
     "omp": "@oh-my-pi/pi-coding-agent",
     "pi": "@earendil-works/pi-coding-agent",
     "pi-bolt": "pi-bolt",
-    "antigravity": "@google/gemini-cli",
     "crush": "@charmland/crush",
     "openclaw": "openclaw",
 }
@@ -613,6 +618,21 @@ def _codex_packages(home: Path | None = None) -> Path:
 
 
 def install_command(status: AgentStatus) -> tuple[UpdateCommand | None, str]:
+    if status.spec.key == "antigravity":
+        if sys.platform == "win32":
+            shell = _which("pwsh") or _which("powershell")
+            if not shell:
+                return None, "Antigravity 설치에는 PowerShell이 필요합니다."
+            script = (
+                "$ErrorActionPreference = 'Stop'; $global:LASTEXITCODE = 0; "
+                "& ([scriptblock]::Create((irm https://antigravity.google/cli/install.ps1))); "
+                "exit $LASTEXITCODE"
+            )
+            return UpdateCommand((shell, "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script), script), ""
+        if not _which("curl") or not (bash := _which("bash")):
+            return None, "Antigravity 설치에는 curl과 bash가 필요합니다."
+        script = "curl -fsSL https://antigravity.google/cli/install.sh | bash"
+        return UpdateCommand((bash, "-o", "pipefail", "-c", script), script), ""
     if status.spec.key == "hermes":
         if sys.platform == "win32":
             # Windows 공식 설치는 install.ps1이며 %LOCALAPPDATA%\hermes에 설치하고 사용자 PATH·HERMES_HOME을 등록함.
@@ -997,7 +1017,6 @@ def update_command(status: AgentStatus, *, home: Path | None = None) -> tuple[Up
         return UpdateCommand(argv, "agy update"), ""
     packages = {
         "crush": ("@charmland/crush",),
-        "antigravity": ("@google/gemini-cli",),
     }
     if spec.key in packages:
         command = _package_update(status.executable, packages[spec.key])

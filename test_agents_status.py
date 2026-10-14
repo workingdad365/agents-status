@@ -423,7 +423,6 @@ class UpdateTests(unittest.TestCase):
     def test_package_updates_follow_symlink_and_original_manager(self):
         for key, package, binary in (
             ("crush", "@charmland/crush", "crush"),
-            ("antigravity", "@google/gemini-cli", "gemini"),
         ):
             for manager in ("npm", "bun", "brew"):
                 with self.subTest(key=key, manager=manager), tempfile.TemporaryDirectory() as directory:
@@ -471,7 +470,7 @@ class UpdateTests(unittest.TestCase):
                     status = AgentStatus(SPECS[key], StatusKind.INSTALLED, executable, "1.0", "unknown")
                     command, reason = update_command(status)
                     self.assertIsNone(command)
-                    self.assertIn("판별하지 못했습니다", reason)
+                    self.assertIn("자동 업데이트를 지원하지 않습니다" if key == "antigravity" else "판별하지 못했습니다", reason)
 
     def test_npm_install_without_matching_manager_does_not_fall_back(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -1610,6 +1609,46 @@ class UninstallTests(unittest.IsolatedAsyncioTestCase):
             stub = "function Invoke-RestMethod { throw 'download failed' }; "
             result = subprocess.run((*command.argv[:-1], stub + command.argv[-1]), capture_output=True, timeout=10)
             self.assertNotEqual(result.returncode, 0)
+
+    async def test_agy_install_uses_official_platform_script(self):
+        status = AgentStatus(SPECS["antigravity"], StatusKind.MISSING, None, "-", "-")
+        for platform_name in ("linux", "darwin"):
+            with self.subTest(platform=platform_name), patch("sys.platform", platform_name), patch("agents_status.core._which", side_effect=lambda name: f"/bin/{name}"):
+                command, reason = install_command(status)
+                self.assertEqual(reason, "")
+                self.assertEqual(command.argv, ("/bin/bash", "-o", "pipefail", "-c", "curl -fsSL https://antigravity.google/cli/install.sh | bash"))
+        for shell in ("pwsh", "powershell"):
+            with self.subTest(shell=shell), patch("sys.platform", "win32"), patch("agents_status.core._which", side_effect=lambda name: name if name == shell else None):
+                command, reason = install_command(status)
+                self.assertEqual(reason, "")
+                self.assertEqual(command.argv[:5], (shell, "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command"))
+                self.assertIn("https://antigravity.google/cli/install.ps1", command.argv[5])
+                self.assertIn("exit $LASTEXITCODE", command.argv[5])
+        for platform_name, missing in (("linux", "curl"), ("linux", "bash"), ("win32", "powershell")):
+            with self.subTest(platform=platform_name, missing=missing), patch("sys.platform", platform_name), patch("agents_status.core._which", side_effect=lambda name: None if name in (missing, "pwsh") else name):
+                command, reason = install_command(status)
+                self.assertIsNone(command)
+                self.assertTrue(reason)
+
+    async def test_agy_detection_ignores_gemini_and_ide_and_checks_native_path(self):
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            spec = SPECS["antigravity"]
+            self.assertEqual(spec.binaries, ("agy",))
+            with patch("agents_status.core._which", side_effect=lambda name, **kwargs: "/bin/" + name if name in ("gemini", "antigravity") else None):
+                status = scan_agent(spec, home=home, env={})
+            self.assertEqual(status.status, StatusKind.MISSING)
+            for platform_name, relative in (("linux", ".local/bin/agy"), ("darwin", ".local/bin/agy"), ("win32", "AppData/Local/agy/bin/agy.exe")):
+                executable = home / relative
+                executable.parent.mkdir(parents=True, exist_ok=True)
+                executable.touch()
+                executable.chmod(0o755)
+                with self.subTest(platform=platform_name), patch("sys.platform", platform_name), patch("agents_status.core._which", return_value=None), patch("agents_status.core._version", return_value="1.3.2"):
+                    status = scan_agent(spec, home=home, env={})
+                    self.assertEqual(status.executable, executable)
+                    self.assertEqual(status.status, StatusKind.INSTALLED)
+                with patch("sys.platform", platform_name), patch("agents_status.core._which", return_value="/custom/agy"), patch("agents_status.core._version", return_value="1.3.2"):
+                    self.assertEqual(scan_agent(spec, home=home, env={}).executable, Path("/custom/agy"))
 
     async def test_omp_install_uses_official_binary_installer(self):
         # npm 패키지는 실행에 Bun이 필요하므로 Bun 없이 동작하는 공식 설치 스크립트의 --binary 모드를 사용함.

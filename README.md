@@ -73,7 +73,7 @@ OpenClaw가 `Could not inspect OpenClaw processes`를 출력하면 내부 프로
 
 삭제 버튼은 설치·업데이트 버튼 옆에 배치한다. 확인 창에서 `Y`는 프로그램과 설정·인증·사용 기록을 함께 삭제하고, `N`은 설정을 보존하고 프로그램만 삭제한다. `Esc` 또는 취소 버튼으로 취소한다. `설정만` 상태에서는 `Y`로 남은 설정을 정리할 수 있으며, `미설치` 상태에서는 삭제 버튼을 비활성화한다. 작업 중에는 새로고침·설치·업데이트·삭제 버튼을 비활성화하며 완료 후 상태를 다시 조회한다.
 
-설치는 npm 전역 패키지를 사용하며 Hermes는 공식 설치 스크립트의 비대화형 모드를 사용한다(Windows는 PowerShell로 `install.ps1`, 그 외는 bash로 `install.sh`). OMP는 npm 패키지가 실행에 Bun을 요구하므로 공식 설치 스크립트의 `--binary` 모드로 Bun이 필요 없는 단일 바이너리를 설치한다(Windows는 PowerShell로 `https://omp.sh/install.ps1`이 `$PI_INSTALL_DIR`, 기본값 `%LOCALAPPDATA%\omp`에 설치하고 사용자 PATH에 등록하며, 그 외는 `https://omp.sh/install`이 `~/.local/bin`에 설치한다). Antigravity 항목의 신규 설치 대상은 기존 감지 대상 중 Gemini CLI이다.
+설치는 npm 전역 패키지를 사용하며 Hermes는 공식 설치 스크립트의 비대화형 모드를 사용한다(Windows는 PowerShell로 `install.ps1`, 그 외는 bash로 `install.sh`). OMP는 npm 패키지가 실행에 Bun을 요구하므로 공식 설치 스크립트의 `--binary` 모드로 Bun이 필요 없는 단일 바이너리를 설치한다(Windows는 PowerShell로 `https://omp.sh/install.ps1`이 `$PI_INSTALL_DIR`, 기본값 `%LOCALAPPDATA%\omp`에 설치하고 사용자 PATH에 등록하며, 그 외는 `https://omp.sh/install`이 `~/.local/bin`에 설치한다). Antigravity는 [공식 설치 문서](https://antigravity.google/docs/cli/install/)에 따라 Windows에서는 PowerShell로 `https://antigravity.google/cli/install.ps1`, macOS·Linux에서는 `curl -fsSL https://antigravity.google/cli/install.sh | bash`를 실행하여 `agy`를 설치한다. Gemini CLI(`gemini`)와 IDE 명령(`antigravity`)은 Antigravity CLI로 감지하지 않는다. PATH에 없으면 Windows의 `%LOCALAPPDATA%\agy\bin\agy.exe`, macOS·Linux의 `~/.local/bin/agy`를 확인한다. 기존에 잘못 설치한 Gemini CLI는 자동 삭제하지 않는다.
 
 Windows Hermes는 PATH에서 찾지 못하면 `$HERMES_HOME`(기본값 `%LOCALAPPDATA%\hermes`) 아래의 `bin\hermes.exe`, `bin\hermes.cmd`, 구버전 `hermes-agent\venv\Scripts\hermes.exe`를 차례로 확인한다. 설치 후 부모 터미널의 PATH가 갱신되지 않아도 설치 상태를 감지하며, PATH에 이미 등록된 실행 파일을 우선한다. Windows OMP도 같은 이유로 PATH에서 찾지 못하면 `$PI_INSTALL_DIR`(기본값 `%LOCALAPPDATA%\omp`)의 `omp.exe`를 확인한다. Windows 설치 스크립트가 반환한 실패 코드도 앱에 전달하여 설치 실패를 성공으로 표시하지 않도록 한다.
 
@@ -147,12 +147,12 @@ merge 방식은 `<!-- GLOBAL_INSTRUCTIONS:BEGIN -->`과 `<!-- GLOBAL_INSTRUCTION
 | OMP | `~/.omp/agent/config.yml` | `omp update` |
 | Pi | 설정 또는 인증 프로바이더 | `pi update --self` |
 | Pi-Bolt | `~/.pi/agent/settings.json`, `auth.json` (Pi와 공유) | `pi-bolt update` |
-| Antigravity | Google 고정 | `agy update`(Windows `agy.exe` 포함), 그 외 npm/Bun/Homebrew 설치 판별 |
+| Antigravity | Google 고정 | `agy update`(Windows `agy.exe` 포함) |
 | Crush | `~/.local/share/crush/crush.json` | npm/Bun/Homebrew 설치 판별 |
 | Hermes | `$HERMES_HOME/config.yaml`(기본값은 Windows `%LOCALAPPDATA%\hermes`, 그 외 `~/.hermes`) | `hermes update --yes` |
 | OpenClaw | `~/.openclaw/openclaw.json` | `openclaw update --yes` |
 
-Codex는 공식 설치 스크립트(`curl https://chatgpt.com/codex/install.sh | sh`)가 `~/.codex/packages/standalone`에 설치한 경우 `codex update`로 자체 업데이트한다. 이 명령은 같은 설치 스크립트를 비대화형으로 다시 실행한다. 그 외에는 실행 파일의 실제 경로에서 npm 또는 Homebrew 설치임이 확인된 경우에만 업데이트한다. Crush와 Gemini CLI(`gemini`로 감지된 경우)는 심볼릭 링크의 실제 경로와 패키지 정보를 이용해 npm/Bun/Homebrew 설치를 판별한다(Windows는 삭제와 같은 방식으로 Bun `.bunx` shim과 npm prefix 레이아웃을 판별). npm은 원래 설치된 prefix의 npm을 사용하고 동일한 prefix에 업데이트한다. Homebrew는 실제 Cellar/Caskroom 경로의 패키지명을 사용한다. 설치 방식을 판별할 수 없거나 해당 설치의 패키지 관리자가 없으면 경로와 사유를 안내한다.
+Codex는 공식 설치 스크립트(`curl https://chatgpt.com/codex/install.sh | sh`)가 `~/.codex/packages/standalone`에 설치한 경우 `codex update`로 자체 업데이트한다. 이 명령은 같은 설치 스크립트를 비대화형으로 다시 실행한다. 그 외에는 실행 파일의 실제 경로에서 npm 또는 Homebrew 설치임이 확인된 경우에만 업데이트한다. Crush는 심볼릭 링크의 실제 경로와 패키지 정보를 이용해 npm/Bun/Homebrew 설치를 판별한다(Windows는 삭제와 같은 방식으로 Bun `.bunx` shim과 npm prefix 레이아웃을 판별). npm은 원래 설치된 prefix의 npm을 사용하고 동일한 prefix에 업데이트한다. Homebrew는 실제 Cellar/Caskroom 경로의 패키지명을 사용한다. 설치 방식을 판별할 수 없거나 해당 설치의 패키지 관리자가 없으면 경로와 사유를 안내한다.
 
 Pi-Bolt는 [공식 저장소](https://github.com/opensec-git/Pi-Bolt)의 npm 패키지 `pi-bolt`로 설치하며 필수 설치 스크립트를 허용한다. Pi와 실행 파일은 별개지만 설정·인증·세션과 글로벌 지침은 공유하므로, 어느 쪽에서든 설정 삭제를 선택하면 양쪽에 반영된다. 공식 스크립트 설치(`~/.pi-bolt` 또는 `PIBOLT_INSTALL`)는 현재 실행 파일의 플랫폼별 설치 디렉터리와 진입점 링크를 삭제한다. Windows에서는 PATH에 없을 때 해당 설치 루트의 `pi-bolt-win32-<variant>/pi-bolt.exe`도 감지한다.
 
