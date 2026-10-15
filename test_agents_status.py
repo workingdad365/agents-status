@@ -446,7 +446,8 @@ class UpdateTests(unittest.TestCase):
                     with patch("shutil.which", return_value="/different/installation/bin/npm"):
                         command, reason = update_command(status)
                     expected = {
-                        "npm": (str(tool), "install", "--global", "--prefix", str(prefix), f"{package}@latest"),
+                        "npm": (str(tool), "install", "--global", "--prefix", str(prefix),
+                                *(("--allow-scripts=pi-bolt", "--ignore-scripts=false") if key == "pi-bolt" else ()), f"{package}@latest"),
                         "bun": (str(tool), "add", "--global", f"{package}@latest"),
                         "brew": (str(tool), "upgrade", "--formula", binary),
                     }
@@ -494,12 +495,34 @@ class UpdateTests(unittest.TestCase):
             status = AgentStatus(SPECS["pi-bolt"], StatusKind.INSTALLED, executable, "1.0", "unknown")
             with patch("agents_status.core._which", return_value="npm.cmd"):
                 command, reason = update_command(status)
-            self.assertEqual(command.argv, ("npm.cmd", "install", "--global", "--prefix", str(prefix), "pi-bolt@latest"))
+            self.assertEqual(command.argv, ("npm.cmd", "install", "--global", "--prefix", str(prefix),
+                                            "--allow-scripts=pi-bolt", "--ignore-scripts=false", "pi-bolt@latest"))
             self.assertEqual(reason, "")
             with patch("agents_status.core._which", return_value=None):
                 command, reason = update_command(status)
             self.assertIsNone(command)
             self.assertIn("npm/Bun", reason)
+
+
+    @unittest.skipIf(sys.platform == "win32", "POSIX 셸 런처 검증")
+    def test_pi_bolt_version_uses_launcher_when_postinstall_was_skipped(self):
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            root = home / "lib/node_modules/pi-bolt"
+            (root / "bin").mkdir(parents=True)
+            (root / "package.json").write_text('{"name":"pi-bolt"}')
+            placeholder = root / "bin/pi-bolt.exe"
+            placeholder.write_text('# shellcheck shell=sh\nexit 1\n')
+            placeholder.chmod(0o755)
+            launcher = root / "bin/pi-bolt"
+            launcher.write_text('#!/bin/sh\nprintf "0.9.0\\n"\n')
+            launcher.chmod(0o755)
+            (home / "bin").mkdir()
+            executable = home / "bin/pi-bolt"
+            symlink_or_skip(executable, placeholder)
+            status = scan_agent(SPECS["pi-bolt"], home=home, path=str(home / "bin"))
+            self.assertEqual(status.version, "0.9.0")
+            self.assertEqual(status.executable, executable)
 
 
 class AppTests(unittest.IsolatedAsyncioTestCase):

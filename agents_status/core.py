@@ -405,7 +405,15 @@ def scan_agent(
     provider = spec.provider_probe(base, environment) if executable or config_root.is_dir() else "-"
     if executable:
         # 버전 조회도 홈 디렉터리(기본) 또는 지정한 디렉터리에서 실행하여 프로젝트 디렉터리 오염을 막음.
-        version = _version(executable, spec.version_args, base if cwd is None else cwd)
+        version_executable = executable
+        if spec.key == "pi-bolt" and sys.platform != "win32":
+            resolved = executable.resolve()
+            launcher = resolved.with_name("pi-bolt")
+            # postinstall이 생략된 npm 패키지의 .exe placeholder에는 shebang이 없으므로 정상 셸 런처를 사용함.
+            if (resolved.name == "pi-bolt.exe" and launcher.is_file()
+                    and _json_string(resolved.parent.parent / "package.json", "name") == "pi-bolt"):
+                version_executable = launcher
+        version = _version(version_executable, spec.version_args, base if cwd is None else cwd)
         return AgentStatus(spec, StatusKind.INSTALLED, executable, version, provider)
     if config_root.is_dir():
         return AgentStatus(spec, StatusKind.CONFIG_ONLY, None, "-", provider)
@@ -1011,6 +1019,9 @@ def update_command(status: AgentStatus, *, home: Path | None = None) -> tuple[Up
     if spec.key == "pi-bolt":
         command = _package_update(status.executable, ("pi-bolt",))
         if command:
+            if command.argv[1] == "install":
+                argv = (*command.argv[:-1], "--allow-scripts=pi-bolt", "--ignore-scripts=false", command.argv[-1])
+                command = UpdateCommand(argv, " ".join(argv))
             return command, ""
         if ("node_modules" in _shim_target(status.executable).parts
                 or (status.executable.parent / "node_modules/pi-bolt/package.json").is_file()):
