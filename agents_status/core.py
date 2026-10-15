@@ -671,6 +671,10 @@ def install_command(status: AgentStatus) -> tuple[UpdateCommand | None, str]:
     if package and (npm := _which("npm")):
         # npm 12에서 Claude·OpenCode의 필수 바이너리 배치 스크립트 실행을 허용함.
         scripts = (f"--allow-scripts={package}",) if status.spec.key in ("claude", "opencode", "pi-bolt") else ()
+        if status.spec.key == "claude":
+            # allow-scripts만으로는 ignore-scripts 설정을 덮어쓰지 못함.
+            # 네이티브 바이너리는 optionalDependencies에 포함되므로 omit=optional도 재정의함.
+            scripts += ("--ignore-scripts=false", "--include=optional")
         argv = (npm, "install", "--global", *scripts, f"{package}@latest")
         return UpdateCommand(argv, " ".join(argv)), ""
     if package:

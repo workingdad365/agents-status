@@ -516,7 +516,7 @@ class AppTests(unittest.IsolatedAsyncioTestCase):
                     self.assertNotIsInstance(app.screen, ConfirmUpdate)
                     self.assertEqual(run.await_count, row)
                     package = "@openai/codex" if row == 1 else "@anthropic-ai/claude-code"
-                    scripts = ("--allow-scripts=@anthropic-ai/claude-code",) if row == 2 else ()
+                    scripts = ("--allow-scripts=@anthropic-ai/claude-code", "--ignore-scripts=false", "--include=optional") if row == 2 else ()
                     self.assertEqual(run.call_args.args[0].argv, ("/bin/npm", "install", "--global", *scripts, f"{package}@latest"))
 
     async def test_delete_answers_keep_remove_or_cancel(self):
@@ -1556,9 +1556,10 @@ class UninstallTests(unittest.IsolatedAsyncioTestCase):
                     status = AgentStatus(SPECS[key], StatusKind.MISSING, None, "-", "-")
                     command, reason = install_command(status)
                     self.assertEqual(reason, "")
+                    native_options = ("--ignore-scripts=false", "--include=optional") if key == "claude" else ()
                     self.assertEqual(command.argv, (
                         "/bin/npm", "install", "--global",
-                        f"--allow-scripts={package}", f"{package}@latest",
+                        f"--allow-scripts={package}", *native_options, f"{package}@latest",
                     ))
                     self.assertIn(f"--allow-scripts={package}", command.display)
 
