@@ -211,7 +211,7 @@ class AgentsStatusApp(App[None]):
 
     def compose(self) -> ComposeResult:
         with Header():
-            yield Label("v1.0.10", id="app-version")
+            yield Label("v1.0.11", id="app-version")
         yield Static("에이전트 정보를 조회하는 중입니다…", id="summary")
         yield DataTable(id="agents", cursor_type="row", zebra_stripes=True)
         with Horizontal(id="actions"):

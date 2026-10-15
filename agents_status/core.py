@@ -1008,6 +1008,13 @@ def update_command(status: AgentStatus, *, home: Path | None = None) -> tuple[Up
     if not status.executable:
         return None, "실행 파일이 없어 업데이트할 수 없습니다."
     spec = status.spec
+    if spec.key == "pi-bolt":
+        command = _package_update(status.executable, ("pi-bolt",))
+        if command:
+            return command, ""
+        if ("node_modules" in _shim_target(status.executable).parts
+                or (status.executable.parent / "node_modules/pi-bolt/package.json").is_file()):
+            return None, "Pi-Bolt 패키지 설치 경로에서 업데이트에 필요한 npm/Bun을 찾을 수 없습니다."
     if spec.key == "codex" and status.executable.resolve().is_relative_to(_codex_packages(home) / "standalone"):
         # 공식 설치 스크립트 설치는 codex update가 같은 스크립트를 비대화형으로 다시 실행하여 갱신함.
         argv = (str(status.executable), "update")

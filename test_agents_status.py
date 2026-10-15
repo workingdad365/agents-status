@@ -412,7 +412,7 @@ class UpdateTests(unittest.TestCase):
             self.assertEqual(command.display, "codex update")
 
     def test_omp_and_agy_self_update(self):
-        for key, binary in (("omp", "omp"), ("antigravity", "agy"), ("antigravity", "agy.EXE")):
+        for key, binary in (("omp", "omp"), ("pi-bolt", "pi-bolt"), ("antigravity", "agy"), ("antigravity", "agy.EXE")):
             with self.subTest(key=key):
                 executable = Path("/custom/bin") / binary
                 status = AgentStatus(SPECS[key], StatusKind.INSTALLED, executable, "1.0", "unknown")
@@ -423,6 +423,7 @@ class UpdateTests(unittest.TestCase):
     def test_package_updates_follow_symlink_and_original_manager(self):
         for key, package, binary in (
             ("crush", "@charmland/crush", "crush"),
+            ("pi-bolt", "pi-bolt", "pi-bolt"),
         ):
             for manager in ("npm", "bun", "brew"):
                 with self.subTest(key=key, manager=manager), tempfile.TemporaryDirectory() as directory:
@@ -481,6 +482,24 @@ class UpdateTests(unittest.TestCase):
             with patch("shutil.which", return_value="/different/bin/npm"):
                 command, _ = update_command(status)
             self.assertIsNone(command)
+
+    def test_pi_bolt_windows_npm_update_and_missing_manager(self):
+        with tempfile.TemporaryDirectory() as directory:
+            prefix = Path(directory)
+            root = prefix / "node_modules/pi-bolt"
+            root.mkdir(parents=True)
+            (root / "package.json").write_text('{"name":"pi-bolt"}')
+            executable = prefix / "pi-bolt.cmd"
+            executable.touch()
+            status = AgentStatus(SPECS["pi-bolt"], StatusKind.INSTALLED, executable, "1.0", "unknown")
+            with patch("agents_status.core._which", return_value="npm.cmd"):
+                command, reason = update_command(status)
+            self.assertEqual(command.argv, ("npm.cmd", "install", "--global", "--prefix", str(prefix), "pi-bolt@latest"))
+            self.assertEqual(reason, "")
+            with patch("agents_status.core._which", return_value=None):
+                command, reason = update_command(status)
+            self.assertIsNone(command)
+            self.assertIn("npm/Bun", reason)
 
 
 class AppTests(unittest.IsolatedAsyncioTestCase):
