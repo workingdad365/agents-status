@@ -181,6 +181,8 @@ class AgentsStatusApp(App[None]):
     SUB_TITLE = platform_name()
     CSS = """
     Screen { layout: vertical; }
+    Header HeaderClockSpace { display: none; }
+    #app-version { dock: right; width: auto; padding: 0 1; content-align: right middle; height: 100%; }
     #summary { height: 3; padding: 1 2; background: $boost; }
     DataTable { height: 1fr; }
     #actions { height: 1; padding: 0 1; }
@@ -208,7 +210,8 @@ class AgentsStatusApp(App[None]):
         self.instructions_source = (instructions_source if instructions_source is not None else default_instructions_path()).expanduser().resolve()
 
     def compose(self) -> ComposeResult:
-        yield Header()
+        with Header():
+            yield Label("v1.0.10", id="app-version")
         yield Static("에이전트 정보를 조회하는 중입니다…", id="summary")
         yield DataTable(id="agents", cursor_type="row", zebra_stripes=True)
         with Horizontal(id="actions"):
