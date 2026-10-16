@@ -20,8 +20,27 @@ if ($Architecture -eq 'ARM64') {
     Write-Warning 'Windows ARM64는 x64 에뮬레이션으로 실행함. 네이티브 ARM64 산출물은 없음.'
 } elseif ($Architecture -ne 'AMD64') { throw '64비트 Windows 필요' }
 $Existing = Get-Command agents-status -ErrorAction SilentlyContinue
-if ($Existing -and $Existing.Source -ne $Launcher -and -not $Migrate) {
-    throw "기존 설치 감지: $($Existing.Source). uv tool uninstall agents-status 후 재시도하거나 -Migrate로 명시적 전환. 소스는 삭제하지 않음."
+$UvTool = $null
+$UvCommand = Get-Command uv -CommandType Application -ErrorAction SilentlyContinue
+if ($Existing -and $Existing.Source -ne $Launcher) {
+    if ($UvCommand) {
+        $UvDirectory = & $UvCommand.Source tool dir
+        if ($LASTEXITCODE -eq 0) {
+            $Candidate = Join-Path (($UvDirectory -join "`n").Trim()) 'agents-status'
+            $Receipt = Join-Path $Candidate 'uv-receipt.toml'
+            $Entry = Join-Path $Candidate 'Scripts\agents-status.exe'
+            $Listing = @(& $UvCommand.Source tool list --show-paths --color never)
+            if ($LASTEXITCODE -eq 0 -and $Listing -contains "- agents-status ($($Existing.Source))" -and
+                (Test-Path -LiteralPath $Receipt) -and (Test-Path -LiteralPath $Entry) -and
+                -not ((Get-Item -LiteralPath $Candidate).Attributes -band [IO.FileAttributes]::ReparsePoint) -and
+                (Get-FileHash -LiteralPath $Entry).Hash -eq (Get-FileHash -LiteralPath $Existing.Source).Hash) {
+                $UvTool = $Candidate
+            }
+        }
+    }
+    if (-not $UvTool -and -not $Migrate) {
+        throw "기존 실행기 감지: $($Existing.Source). uv 설치로 확인되지 않아 자동 제거하지 않음. -Migrate로 명시적 전환 가능."
+    }
 }
 if ((Test-Path -LiteralPath $Launcher) -and -not $Migrate -and -not (Select-String -LiteralPath $Launcher -Pattern '^rem agents-status managed launcher$' -Quiet)) { throw '기존 실행기를 덮어쓰려면 -Migrate 필요' }
 if ((Test-Path -LiteralPath $Bin) -and ((Get-Item -LiteralPath $Bin).Attributes -band [IO.FileAttributes]::ReparsePoint)) { throw '실행기 디렉터리 링크 거부' }
@@ -44,6 +63,7 @@ $OldPath = [Environment]::GetEnvironmentVariable('Path', 'User')
 $PathChanged = $false
 $Current = Join-Path $Root 'current.json'
 $Target = $null
+$RestoreUv = $false
 function Fetch([string]$Address, [string]$Destination) {
     $Uri = [Uri]$Address
     for ($Redirect = 0; $Redirect -lt 8; $Redirect++) {
@@ -131,6 +151,17 @@ try {
     Smoke $Executable $Version
     $Target = Join-Path $Versions $Version
     if (Test-Path -LiteralPath $Target) { throw "이미 설치된 버전: $Version (덮어쓰지 않음)" }
+    if ($UvTool) {
+        Copy-Item -LiteralPath $UvTool -Destination (Join-Path $Stage 'old-uv-tool') -Recurse
+        Copy-Item -LiteralPath $Existing.Source -Destination (Join-Path $Stage 'old-uv-launcher')
+        $RestoreUv = $true
+        Write-Host '기존 uv 설치 제거 후 릴리스 설치로 전환함.'
+        & $UvCommand.Source tool uninstall agents-status
+        if ($LASTEXITCODE -ne 0) { throw '기존 uv 설치 제거 실패' }
+        if ((Test-Path -LiteralPath (Join-Path $UvTool 'uv-receipt.toml')) -or (Test-Path -LiteralPath $Existing.Source)) {
+            throw '기존 uv 설치가 남아 있어 전환 중단'
+        }
+    }
     [IO.Directory]::Move($Payload, $Target)
     $Installed = $true
     if (Test-Path -LiteralPath $Current) { Copy-Item -LiteralPath $Current -Destination (Join-Path $Stage 'old-current.json'); $HadCurrent = $true }
@@ -166,9 +197,14 @@ try {
     }
     $Success = $true
     Write-Host "설치 완료: $Version`n실행: $Launcher`n새 터미널에서 agents-status 사용. 기존 터미널은 사용자 PATH를 다시 읽어야 함."
-    if ($Migrate -and $Existing -and $Existing.Source -ne $Launcher) { Write-Warning "기존 설치는 보존됨: $($Existing.Source). PATH 우선순위를 확인하고 필요하면 uv tool uninstall agents-status 실행. 소스는 삭제하지 않음." }
+    if ($Migrate -and -not $UvTool -and $Existing -and $Existing.Source -ne $Launcher) { Write-Warning "기존 설치는 보존됨: $($Existing.Source). PATH 우선순위 확인 필요." }
 } finally {
     if (-not $Success) {
+        if ($RestoreUv) {
+            [IO.Directory]::CreateDirectory($UvTool) | Out-Null
+            Get-ChildItem -LiteralPath (Join-Path $Stage 'old-uv-tool') -Force | Copy-Item -Destination $UvTool -Recurse -Force
+            Copy-Item -LiteralPath (Join-Path $Stage 'old-uv-launcher') -Destination $Existing.Source -Force
+        }
         if ($Activated) {
             if ($HadCurrent) { Activate (Join-Path $Stage 'old-current.json') $Current }
             elseif (Test-Path -LiteralPath $Current) { Remove-Item -LiteralPath $Current -Force }
