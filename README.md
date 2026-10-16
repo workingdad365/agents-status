@@ -28,6 +28,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\install-agents-status.ps1
 
 설치 후 새 터미널에서는 `agents-status`로 실행 가능. PATH 자동 등록을 원하지 않으면 `--no-path` / `-NoPath` 사용. fish 등 bash·zsh 이외의 셸에서는 `~/.local/bin`을 PATH에 직접 추가함.
 
+Linux·WSL2·macOS에서는 기존 uv 설치를 확인하면 새 패키지 검증 후 자동으로 `uv tool uninstall agents-status`를 실행하고 릴리스 설치를 계속함. 전환 실패 시 기존 uv 환경과 실행기를 복구함. uv 소유로 확인되지 않은 실행기는 자동 삭제하지 않음.
+
 | 환경 | 요구 사항 |
 |---|---|
 | Linux / WSL2 | x86_64: glibc 2.35 이상, ARM64: glibc 2.39 이상 |
@@ -141,77 +143,41 @@ uv run python -m unittest -v
 
 ## 릴리스 게시
 
-### 최초 1회: 배포 권한 설정
+### 최초 1회 설정
 
-공개 배포 저장소 `workingdad365/agents-status-releases`에만 **Contents: Read and write** 권한을 가진 fine-grained 토큰을 발급하고, 비공개 소스 저장소에 등록함.
+Bash·Git·uv·GitHub CLI가 필요하며, `gh auth login`으로 로그인함. 공개 배포 저장소 `workingdad365/agents-status-releases`에만 **Contents: Read and write** 권한을 가진 fine-grained 토큰을 발급하고 비공개 소스 저장소에 등록함.
 
 ```bash
 gh secret set RELEASE_TOKEN --repo workingdad365/agents-status
 ```
 
-매 배포 시 재등록할 필요 없음. 토큰 만료·폐기·교체 시에만 다시 등록함. 토큰 값은 코드나 명령 인자에 기록하지 않음.
+매 배포 시 재등록할 필요 없음. 토큰 만료·폐기·교체 시에만 다시 등록함.
 
-### 매 릴리스: 버전 변경 → 검증 → 커밋 → 태그 게시
+### 매 릴리스
 
-아래 명령은 저장소 루트의 Bash 기준. `main`에서 배포할 변경 사항을 준비한 뒤 진행함.
-
-**1. 코드 버전 변경**
-
-`agents_status/__init__.py`의 `__version__`을 아직 사용하지 않은 새 버전으로 직접 변경함. `1.0.14` 이후 배포라면 `1.0.15` 등 다음 번호 사용.
-
-**태그만 만들어서는 앱 버전이 바뀌지 않음. 코드 버전과 태그가 다르면 CI가 배포를 중단함.**
-
-**2. 의존성 잠금 갱신 및 검증**
+`main`에서 배포할 기능·문서 변경을 먼저 커밋한 뒤 실행함. 미커밋 변경이 있으면 배포하지 않음.
 
 ```bash
-uv lock
-uv sync --locked
-VERSION=$(uv run --no-sync python -c 'from agents_status import __version__; print(__version__)')
-uv run --no-sync python packaging/build_release.py --check-tag "v$VERSION"
-uv run --no-sync python -m unittest discover -v
-uv run --no-sync agents-status --version
-uv run --no-sync agents-status --self-check
+./release.sh
 ```
 
-모든 명령이 성공하고 출력 버전이 의도한 배포 번호와 일치하는지 확인함. 실패하면 이후 단계를 진행하지 않음.
+스크립트가 다음 절차를 자동 수행함.
 
-**3. 배포할 변경 사항 커밋·푸시**
+1. 로그인·배포 토큰 등록·원격 브랜치 상태 확인.
+2. 패치 버전 증가: `1.0.14` → `1.0.15`. 버전·태그 번호를 직접 입력할 필요 없음.
+3. 잠금 파일 갱신, 전체 테스트, CLI 버전 및 실행 점검.
+4. 버전 변경 커밋 및 같은 버전의 태그 생성.
+5. `main`과 태그를 원자적으로 푸시.
+6. 5개 플랫폼의 CI 테스트·빌드·자동 게시가 끝날 때까지 대기.
+7. 공개 릴리스와 ZIP 5개·설치 스크립트 2개·체크섬 파일을 확인한 뒤 완료 URL 출력.
 
-```bash
-git add agents_status/__init__.py uv.lock
-git add -p
-git diff --cached
-git commit -m "release: v$VERSION"
-git push origin main
-```
+**태그 푸시만으로 배포 완료를 표시하지 않음.** 공개 게시와 배포 파일 확인까지 성공해야 스크립트가 성공 종료함. 기존 태그는 덮어쓰지 않음.
 
-`git add -p`에서 이번 배포에 포함할 코드·문서 변경을 선택함. 새 파일이 있다면 파일 경로를 지정해 별도로 `git add`함. 커밋하지 않은 변경은 릴리스에 포함되지 않음.
+### 실패 시
 
-**4. 커밋된 코드 버전으로 태그 생성·푸시**
+- **커밋 전 검증 실패:** 버전·잠금 파일을 실행 전 상태로 복구함. 원인을 수정하고 커밋한 뒤 다시 실행함.
+- **커밋 후 푸시 실패:** 릴리스 커밋과 생성된 태그를 보존함. 오류 안내의 태그를 확인하고 `git push --atomic origin main <해당 태그>`로 푸시를 재개함. 태그 생성 자체가 실패했다면 먼저 해당 커밋에 태그를 생성함.
+- **CI 또는 게시 실패:** [Release Actions](https://github.com/workingdad365/agents-status/actions/workflows/release.yml)에서 해당 실행의 오류 확인. 권한 문제만 수정했다면 실패 작업을 재실행할 수 있음. 코드 수정이 필요하면 수정·커밋 후 `./release.sh`로 다음 버전을 배포함.
 
-```bash
-git diff --exit-code HEAD -- agents_status/__init__.py &&
-VERSION=$(uv run --no-sync python -c 'from agents_status import __version__; print(__version__)') &&
-git tag -a "v$VERSION" -m "agents-status $VERSION" &&
-git push origin "v$VERSION"
-```
+커밋 후 실패했을 때 무작정 스크립트를 다시 실행하면 버전이 한 번 더 증가하므로 기존 배포 상태를 먼저 확인함. 수동 태그 생성이나 버전 파일 수정은 일반 배포 절차에 필요 없음.
 
-첫 명령으로 버전 파일에 미커밋 변경이 없는지 확인함. 명령을 `&&`로 연결하므로 확인·태그 생성이 실패하면 푸시하지 않음. 기존 태그를 강제로 덮어쓰지 않음. 새 터미널에서도 코드에서 버전을 읽으므로 태그 번호를 따로 입력할 필요 없음.
-
-**5. 배포 완료 확인**
-
-[소스 저장소의 Release Actions](https://github.com/workingdad365/agents-status/actions/workflows/release.yml)에서 해당 태그 실행의 `build` 5개와 `publish`가 모두 성공했는지 확인함. 태그 푸시 성공만으로 배포 완료를 판단하지 않음.
-
-```bash
-gh release view "v$VERSION" --repo workingdad365/agents-status-releases
-```
-
-공개 릴리스에 ZIP 5개, `install.sh`, `install.ps1`, `SHA256SUMS`가 있으며 초안이 아닌지 확인함. 마지막으로 이 문서의 버전 미지정 설치 명령으로 설치하고 `agents-status --version`이 새 버전인지 확인함. 비공개 소스나 커밋 이력은 공개 배포 저장소에 복사하지 않음.
-
-### 선택 사항: 태그 없이 CI 빌드 검증
-
-```bash
-gh workflow run release.yml --repo workingdad365/agents-status --ref main
-```
-
-수동 실행은 5개 플랫폼의 테스트·빌드만 수행하며 릴리스를 게시하지 않음. 태그 배포가 실패하면 Actions의 실패 원인을 먼저 수정함. 새 커밋을 올려도 기존 태그는 이동하지 않으므로, 코드 수정이 필요하면 새 버전으로 위 절차를 다시 진행함.
