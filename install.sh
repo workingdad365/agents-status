@@ -35,12 +35,30 @@ elif command -v shasum >/dev/null 2>&1; then hash_command=shasum
 else fail 'sha256sum 또는 shasum 설치 필요'; fi
 launcher=$HOME/.local/bin/agents-status
 existing=$(command -v agents-status 2>/dev/null || true)
-if [ -n "$existing" ] && [ "$existing" != "$launcher" ] && [ "$migrate" -ne 1 ]; then
-    fail "기존 설치 감지: $existing. uv tool uninstall agents-status 실행 후 재시도하거나 --migrate로 명시적 전환. 소스는 삭제하지 않음."
+uv_tool=
+remove_uv=0
+if command -v uv >/dev/null 2>&1; then
+    uv_tools=$(uv tool dir 2>/dev/null || true)
+    [ -z "$uv_tools" ] || uv_tool=$uv_tools/agents-status
+fi
+is_uv_launcher() {
+    [ -n "$uv_tool" ] && [ ! -L "$uv_tool" ] &&
+        [ -f "$uv_tool/uv-receipt.toml" ] &&
+        [ "$1" -ef "$uv_tool/bin/agents-status" ]
+}
+check_existing() {
+    if is_uv_launcher "$1"; then
+        remove_uv=1
+    elif [ "$migrate" -ne 1 ]; then
+        fail "기존 실행기 감지: $1. uv 설치로 확인되지 않아 자동 제거하지 않음. --migrate로 명시적 전환 가능."
+    fi
+}
+if [ -n "$existing" ] && [ "$existing" != "$launcher" ]; then
+    check_existing "$existing"
 fi
 if [ -e "$launcher" ] || [ -L "$launcher" ]; then
-    if ! grep -q '^# agents-status managed launcher$' "$launcher" 2>/dev/null && [ "$migrate" -ne 1 ]; then
-        fail "기존 실행기 감지: $launcher. uv tool uninstall agents-status 실행 후 재시도하거나 --migrate 사용."
+    if ! grep -q '^# agents-status managed launcher$' "$launcher" 2>/dev/null; then
+        check_existing "$launcher"
     fi
 fi
 [ ! -L "$root" ] || fail '설치 루트 심볼릭 링크 거부'
@@ -53,10 +71,17 @@ had_current=0
 had_launcher=0
 success=0
 installed=0
+restore_uv=0
+uv_external=
 cleanup() {
     result=$?
     trap - EXIT HUP INT TERM
     if [ "$success" -ne 1 ] && [ -n "$stage" ]; then
+        if [ "$restore_uv" -eq 1 ]; then
+            mkdir -p "$uv_tool"
+            cp -RP "$stage/old-uv-tool/." "$uv_tool/"
+            if [ -n "$uv_external" ]; then cp -P "$stage/old-uv-launcher" "$uv_external"; fi
+        fi
         if [ "$activated" -eq 1 ]; then
             if [ "$had_current" -eq 1 ]; then mv -f "$stage/old-current.json" "$root/current.json"; else rm -f "$root/current.json"; fi
         fi
@@ -115,10 +140,25 @@ reported=$("$payload/agents-status" --version)
 [ "$(printf '%s\n' "$reported" | awk '{print $NF}')" = "$version" ] || fail '실행 파일 버전 불일치'
 "$payload/agents-status" --self-check
 [ ! -e "$root/versions/$version" ] && [ ! -L "$root/versions/$version" ] || fail "이미 설치된 버전: $version (덮어쓰지 않음)"
-mv "$payload" "$root/versions/$version"
-installed=1
 if [ -e "$root/current.json" ]; then cp "$root/current.json" "$stage/old-current.json"; had_current=1; fi
 if [ -e "$launcher" ] || [ -L "$launcher" ]; then cp -P "$launcher" "$stage/old-launcher"; had_launcher=1; fi
+if [ "$remove_uv" -eq 1 ]; then
+    # 새 패키지 검증 후 제거하며, 전환 실패 시 uv 환경과 실행기를 복구함.
+    cp -RP "$uv_tool" "$stage/old-uv-tool"
+    if [ -n "$existing" ] && [ "$existing" != "$launcher" ] && is_uv_launcher "$existing"; then
+        cp -P "$existing" "$stage/old-uv-launcher"
+        uv_external=$existing
+    fi
+    restore_uv=1
+    printf '기존 uv 설치 제거 후 릴리스 설치로 전환함.\n'
+    uv tool uninstall agents-status || fail '기존 uv 설치 제거 실패'
+    [ ! -f "$uv_tool/uv-receipt.toml" ] || fail 'uv 설치 등록이 남아 있어 전환 중단'
+    if [ -n "$uv_external" ] && { [ -e "$uv_external" ] || [ -L "$uv_external" ]; }; then
+        fail '기존 uv 실행기가 남아 있어 전환 중단'
+    fi
+fi
+mv "$payload" "$root/versions/$version"
+installed=1
 cat > "$stage/launcher" <<'LAUNCHER'
 #!/bin/sh
 # agents-status managed launcher
@@ -143,7 +183,7 @@ mv -f "$stage/current.json" "$root/current.json"
 reported=$("$launcher" --version)
 [ "$(printf '%s\n' "$reported" | awk '{print $NF}')" = "$version" ] || fail '실행기 버전 확인 실패'
 "$launcher" --self-check
-if [ "$migrate" -eq 1 ] && [ "$had_launcher" -eq 1 ]; then
+if [ "$migrate" -eq 1 ] && [ "$had_launcher" -eq 1 ] && [ "$remove_uv" -eq 0 ]; then
     backup=$root/legacy-launcher-$(date +%s)
     cp -P "$stage/old-launcher" "$backup"
     printf '기존 실행기 보존: %s (소스/uv 환경은 유지됨)\n' "$backup"
@@ -165,4 +205,4 @@ PROFILE
 fi
 success=1
 printf '설치 완료: %s\n실행: "%s"\n새 터미널에서 agents-status 사용. fish 등은 ~/.local/bin을 PATH에 추가.\n' "$version" "$launcher"
-if [ "$migrate" -eq 1 ]; then printf '기존 uv 도구를 나중에 제거하면 새 실행기도 지워질 수 있음. 제거 후 설치 스크립트 재실행 대신 실행기를 먼저 보존/복원하세요.\n'; fi
+if [ "$migrate" -eq 1 ] && [ "$remove_uv" -eq 0 ]; then printf '기존 uv 도구를 나중에 제거하면 새 실행기도 지워질 수 있음. 제거 후 설치 스크립트 재실행 대신 실행기를 먼저 보존/복원 필요.\n'; fi

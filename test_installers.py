@@ -37,6 +37,32 @@ class PosixInstallerTests(unittest.TestCase):
         destination.write_text(content, encoding="utf-8")
         destination.chmod(0o755)
 
+    def uv_install(self, *, custom_bin=False):
+        tools_root = self.home / "uv tools"
+        tool = tools_root / "agents-status"
+        (tool / "bin").mkdir(parents=True)
+        (tool / "uv-receipt.toml").write_text("registered tool\n")
+        executable = tool / "bin/agents-status"
+        executable.write_text("#!/bin/sh\necho 'agents-status 1.0.11'\n")
+        executable.chmod(0o755)
+        launcher = self.home / ("custom bin" if custom_bin else ".local/bin") / "agents-status"
+        launcher.parent.mkdir(parents=True)
+        launcher.symlink_to(executable)
+        self.env.update(TEST_UV_DIR=str(tools_root), TEST_UV_LAUNCHER=str(launcher))
+        self.env["PATH"] = f"{launcher.parent}{os.pathsep}{self.env['PATH']}"
+        self.executable("uv", f"#!{sys.executable}\n" + """import os, pathlib, shutil, sys
+args = sys.argv[1:]
+if args == ["tool", "dir"]:
+    print(os.environ["TEST_UV_DIR"])
+elif args == ["tool", "uninstall", "agents-status"]:
+    pathlib.Path(os.environ["TEST_UV_LAUNCHER"]).unlink()
+    shutil.rmtree(pathlib.Path(os.environ["TEST_UV_DIR"]) / "agents-status")
+    sys.exit(int(os.environ.get("UV_UNINSTALL_FAIL", "0")))
+else:
+    sys.exit(9)
+""")
+        return tool, launcher
+
     def archive(self, *, unsafe: bool = False, fail_after_activation: bool = False):
         name = "agents-status-1.0.12-linux-x86_64.zip"
         executable = "#!/bin/sh\ncase \"$1\" in --version) echo 'agents-status 1.0.12';; --self-check) "
@@ -120,6 +146,65 @@ class PosixInstallerTests(unittest.TestCase):
         self.assertEqual(old_tool.read_text(), "#!/bin/sh\nexit 0\n")
         self.assertFalse(launcher.is_symlink())
         self.assertEqual(len(list(self.root.glob("legacy-launcher-*"))), 1)
+
+    def test_uv_install_is_automatically_replaced_without_migrate(self):
+        self.archive()
+        tool, launcher = self.uv_install()
+        result = self.install()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertFalse(tool.exists())
+        self.assertFalse(launcher.is_symlink())
+        version = subprocess.run([str(launcher), "--version"], env=self.env, text=True, capture_output=True, check=True)
+        self.assertEqual(version.stdout.strip(), "agents-status 1.0.12")
+        self.assertFalse(list(self.root.glob("legacy-launcher-*")))
+
+    def test_bad_download_preserves_uv_install(self):
+        self.archive()
+        tool, launcher = self.uv_install()
+        with (self.assets / "agents-status-1.0.12-linux-x86_64.zip").open("ab") as stream:
+            stream.write(b"corrupt")
+        result = self.install()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertTrue((tool / "uv-receipt.toml").is_file())
+        self.assertTrue(launcher.is_symlink())
+        version = subprocess.run([str(launcher)], env=self.env, text=True, capture_output=True, check=True)
+        self.assertEqual(version.stdout.strip(), "agents-status 1.0.11")
+
+    def test_activation_failure_restores_uv_environment_and_custom_launcher(self):
+        self.archive(fail_after_activation=True)
+        tool, launcher = self.uv_install(custom_bin=True)
+        result = self.install()
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual((tool / "uv-receipt.toml").read_text(), "registered tool\n")
+        self.assertTrue(launcher.is_symlink())
+        version = subprocess.run([str(launcher)], env=self.env, text=True, capture_output=True, check=True)
+        self.assertEqual(version.stdout.strip(), "agents-status 1.0.11")
+        self.assertFalse((self.root / "current.json").exists())
+        self.assertFalse((self.home / ".local/bin/agents-status").exists())
+        self.assertFalse((self.root / ".update-lock").exists())
+
+    def test_partial_uv_uninstall_failure_restores_original_launcher(self):
+        self.archive()
+        tool, launcher = self.uv_install()
+        self.env["UV_UNINSTALL_FAIL"] = "1"
+        result = self.install()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertTrue((tool / "uv-receipt.toml").is_file())
+        self.assertTrue(launcher.is_symlink())
+        version = subprocess.run([str(launcher)], env=self.env, text=True, capture_output=True, check=True)
+        self.assertEqual(version.stdout.strip(), "agents-status 1.0.11")
+        self.assertFalse((self.root / "current.json").exists())
+
+    def test_unrelated_launcher_does_not_uninstall_registered_uv_tool(self):
+        self.archive()
+        tool, launcher = self.uv_install()
+        launcher.unlink()
+        launcher.write_text("#!/bin/sh\necho unrelated\n")
+        launcher.chmod(0o755)
+        result = self.install()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(launcher.read_text(), "#!/bin/sh\necho unrelated\n")
+        self.assertTrue((tool / "uv-receipt.toml").is_file())
 
 
 if __name__ == "__main__":
