@@ -457,7 +457,8 @@ class AgentsStatusApp(App[None]):
 
     @on(DataTable.RowHighlighted)
     def selection_changed(self) -> None:
-        self._set_buttons(self.busy)
+        if self.is_running:
+            self._set_buttons(self.busy)
 
     @on(Button.Pressed, "#delete")
     def delete_pressed(self) -> None:

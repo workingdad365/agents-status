@@ -640,6 +640,28 @@ class AppTests(unittest.IsolatedAsyncioTestCase):
 
 
 class UpdateInterruptionTests(unittest.IsolatedAsyncioTestCase):
+    async def test_queued_selection_during_shutdown_preserves_exit_result(self):
+        delivered = []
+
+        class ClosingApp(AgentsStatusApp):
+            async def _close_all(self):
+                table = self.query_one(DataTable)
+                message = DataTable.RowHighlighted(table, 0, next(iter(table.rows)))
+                await self.query_one("#actions").remove()
+                delivered.append(self.is_running)
+                await self._dispatch_message(message)
+                await super()._close_all()
+
+        status = AgentStatus(SPECS["pi"], StatusKind.INSTALLED, Path("/bin/pi"), "1", "-")
+        with patch("agents_status.app.scan_agents", AsyncMock(return_value=[status])):
+            app = ClosingApp()
+            async with app.run_test() as pilot:
+                await pilot.pause()
+                self.assertFalse(app.query_one("#update", Button).disabled)
+                app.exit(23)
+            self.assertEqual(delivered, [False])
+            self.assertEqual(app.return_value, 23)
+
     async def test_busy_quit_requires_confirmation(self):
         with patch("agents_status.app.scan_agents", AsyncMock(return_value=[])):
             app = AgentsStatusApp()

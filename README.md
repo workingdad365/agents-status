@@ -177,7 +177,7 @@ gh secret set RELEASE_TOKEN --repo workingdad365/agents-status
 
 - **커밋 전 검증 실패:** 버전·잠금 파일을 실행 전 상태로 복구함. 원인을 수정하고 커밋한 뒤 다시 실행함.
 - **커밋 후 푸시 실패:** 릴리스 커밋과 생성된 태그를 보존함. 오류 안내의 태그를 확인하고 `git push --atomic origin main <해당 태그>`로 푸시를 재개함. 태그 생성 자체가 실패했다면 먼저 해당 커밋에 태그를 생성함.
-- **CI 또는 게시 실패:** [Release Actions](https://github.com/workingdad365/agents-status/actions/workflows/release.yml)에서 해당 실행의 오류 확인. 권한 문제만 수정했다면 실패 작업을 재실행할 수 있음. 코드 수정이 필요하면 수정·커밋 후 `./release.sh`로 다음 버전을 배포함.
+- **CI 또는 게시 실패:** [Release Actions](https://github.com/workingdad365/agents-status/actions/workflows/release.yml)에서 해당 실행의 오류 확인. 권한 문제만 수정했다면 실패 작업을 재실행할 수 있음. 코드·테스트 수정이 필요하면 수정·커밋 후 `./release.sh`로 다음 버전을 배포함. 기존 실행을 재시도하면 같은 태그의 이전 코드를 사용하므로 새 수정 사항은 반영되지 않음.
 
 커밋 후 실패했을 때 무작정 스크립트를 다시 실행하면 버전이 한 번 더 증가하므로 기존 배포 상태를 먼저 확인함. 수동 태그 생성이나 버전 파일 수정은 일반 배포 절차에 필요 없음.
 
