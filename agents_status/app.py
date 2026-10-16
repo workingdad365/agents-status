@@ -350,13 +350,13 @@ class AgentsStatusApp(App[None]):
         self.query_one("#self-update", Button).disabled = disabled or self._checking_release
 
     @work(exclusive=True, group="release-check")
-    async def check_app_release(self, force: bool = False) -> None:
+    async def check_app_release(self) -> None:
         self._checking_release = True
         self.query_one("#self-update", Button).disabled = True
         status = self.query_one("#self-update-status", Label)
         status.update("앱 새 버전 확인 중…")
         try:
-            self.available_release = await asyncio.to_thread(check_for_update, force=force)
+            self.available_release = await asyncio.to_thread(check_for_update)
             if self.available_release is not None:
                 status.update(f"새 버전 {self.available_release.version} 사용 가능")
                 self.query_one("#self-update", Button).label = "앱 업데이트"
@@ -376,7 +376,7 @@ class AgentsStatusApp(App[None]):
         if self.busy or self._checking_release:
             return
         if self.available_release is None:
-            self.check_app_release(force=True)
+            self.check_app_release()
             return
         if installation_root() is None:
             self.notify(

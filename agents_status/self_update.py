@@ -28,7 +28,6 @@ from . import __version__
 REPOSITORY = "workingdad365/agents-status-releases"
 API_URL = f"https://api.github.com/repos/{REPOSITORY}/releases/latest"
 RELEASE_BASE = f"https://github.com/{REPOSITORY}/releases"
-CACHE_SECONDS = 6 * 60 * 60
 NETWORK_TIMEOUT = 20
 DOWNLOAD_SECONDS = 300
 MAX_ARCHIVE_BYTES = 256 * 1024 * 1024
@@ -150,15 +149,6 @@ def installation_root() -> Path | None:
         return None
 
 
-def _cache_path() -> Path:
-    if sys.platform == "win32":
-        base = Path(os.environ.get("LOCALAPPDATA", str(Path.home() / "AppData" / "Local"))) / "Cache"
-    elif sys.platform == "darwin":
-        base = Path.home() / "Library" / "Caches"
-    else:
-        base = Path(os.environ.get("XDG_CACHE_HOME", str(Path.home() / ".cache")))
-    return base / "agents-status" / "release.json"
-
 
 def _atomic_json(path: Path, value: dict) -> None:
     descriptor, temporary = tempfile.mkstemp(prefix=".agents-status-", dir=path.parent)
@@ -274,33 +264,13 @@ def _validate_release(release: Release) -> None:
         raise UpdateError("공식 릴리스의 주소와 배포 파일만 설치할 수 있습니다.")
 
 
-def check_for_update(force: bool = False) -> Release | None:
-    """네트워크 실패는 NetworkError로 알리며 설치 파일은 변경하지 않는다."""
-    cache = _cache_path()
-    metadata = None
-    if not force:
-        try:
-            if cache.stat().st_size <= 1024 * 1024:
-                cached = json.loads(cache.read_text(encoding="utf-8"))
-                age = time.time() - cached["checked_at"]
-                if 0 <= age < CACHE_SECONDS:
-                    _parse_release(cached["release"])
-                    metadata = cached["release"]
-        except (OSError, ValueError, KeyError, TypeError, OverflowError, RecursionError, UpdateError):
-            pass
-    if metadata is None:
-        try:
-            metadata = json.loads(_download(API_URL, None, 1024 * 1024))
-        except (ValueError, UnicodeError, RecursionError) as error:
-            raise UpdateError("GitHub 릴리스 응답이 JSON 형식이 아닙니다.") from error
-        release = _parse_release(metadata)
-        try:
-            cache.parent.mkdir(parents=True, exist_ok=True)
-            _atomic_json(cache, {"checked_at": time.time(), "release": metadata})
-        except OSError:
-            pass
-    else:
-        release = _parse_release(metadata)
+def check_for_update() -> Release | None:
+    """매번 최신 릴리스를 조회하며 네트워크 실패는 NetworkError로 알린다."""
+    try:
+        metadata = json.loads(_download(API_URL, None, 1024 * 1024))
+    except (ValueError, UnicodeError, RecursionError) as error:
+        raise UpdateError("GitHub 릴리스 응답이 JSON 형식이 아닙니다.") from error
+    release = _parse_release(metadata)
     return release if _version_tuple(release.version) > _version_tuple(__version__) else None
 
 

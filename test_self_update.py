@@ -29,7 +29,6 @@ class UpdateTests(unittest.TestCase):
         self.start_patch(patch.object(update, "__version__", self.old))
         self.start_patch(patch.object(update.platform, "system", return_value="Linux"))
         self.start_patch(patch.object(update.platform, "machine", return_value="x86_64"))
-        self.start_patch(patch.object(update, "_cache_path", return_value=self.home / "cache" / "release.json"))
         old_directory = self.root / "versions" / self.old
         old_directory.mkdir(parents=True)
         self.old_executable = old_directory / update._executable_name()
@@ -108,28 +107,18 @@ class UpdateTests(unittest.TestCase):
         with patch.object(update.platform, "system", return_value="Windows"), patch.object(update.platform, "machine", return_value="ARM64"), patch.object(update.sysconfig, "get_platform", return_value="win-amd64"):
             self.assertEqual(update._platform_asset(self.version), f"agents-status-{self.version}-windows-x86_64.zip")
 
-    def test_update_check_cache_force_and_no_downgrade(self):
-        with patch.object(update, "_download", return_value=json.dumps(self.metadata()).encode()) as download:
+    def test_each_check_observes_new_release_without_downgrade(self):
+        responses = [
+            self.metadata(self.old),
+            self.metadata(),
+            self.metadata("1.0.9"),
+        ]
+        with patch.object(update, "_download", side_effect=[
+            json.dumps(metadata).encode() for metadata in responses
+        ]):
+            self.assertIsNone(update.check_for_update())
             self.assertEqual(update.check_for_update(), self.release)
-            self.assertEqual(update.check_for_update(), self.release)
-            self.assertEqual(download.call_count, 1)
-            self.assertEqual(update.check_for_update(force=True), self.release)
-            self.assertEqual(download.call_count, 2)
-        for version in (self.old, "1.0.9"):
-            with patch.object(update, "_download", return_value=json.dumps(self.metadata(version)).encode()):
-                self.assertIsNone(update.check_for_update(force=True))
-
-    def test_invalid_expired_and_future_cache_are_refetched(self):
-        cache = update._cache_path()
-        cache.parent.mkdir()
-        values = ["not json", json.dumps({"checked_at": time.time() - update.CACHE_SECONDS - 1, "release": self.metadata()}),
-                  json.dumps({"checked_at": time.time() + 100, "release": self.metadata()}),
-                  json.dumps({"checked_at": time.time(), "release": {"draft": True}})]
-        for value in values:
-            cache.write_text(value, encoding="utf-8")
-            with patch.object(update, "_download", return_value=json.dumps(self.metadata()).encode()) as download:
-                self.assertEqual(update.check_for_update(), self.release)
-                download.assert_called_once()
+            self.assertIsNone(update.check_for_update())
 
     def test_malformed_and_untrusted_metadata_rejected(self):
         malformed = [None, [], {"draft": True}, self.metadata()]
@@ -152,7 +141,7 @@ class UpdateTests(unittest.TestCase):
         opener = MagicMock()
         opener.open.side_effect = urllib.error.URLError("offline")
         with patch.object(update.urllib.request, "build_opener", return_value=opener), self.assertRaises(update.NetworkError):
-            update.check_for_update(force=True)
+            update.check_for_update()
         self.assert_preserved()
 
     def test_download_limits_and_redirect_allowlist(self):
