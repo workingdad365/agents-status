@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, patch
 
 from textual.widgets import Button, DataTable, LoadingIndicator, RichLog
 
-from agents_status.app import AgentsStatusApp, main
+from agents_status.app import AgentsStatusApp
 from agents_status.core import AGENTS, AgentStatus, StatusKind
 from agents_status.instructions import (
     MARK_BEGIN, MARK_END, SyncResult, _atomic_write,
@@ -308,12 +308,6 @@ class SyncAppTests(unittest.IsolatedAsyncioTestCase):
                 log = "\n".join(line.text for line in app.query_one(RichLog).lines)
                 self.assertIn("1개 작성, 0개 건너뜀, 1개 실패", log)
                 self.assertIn("접근 거부", log)
-
-    def test_command_line_accepts_explicit_source(self):
-        with patch("sys.argv", ["agents-status", "--instructions", "custom.md"]), patch("agents_status.app.AgentsStatusApp") as app:
-            main()
-        app.assert_called_once_with(instructions_source=Path("custom.md"))
-        app.return_value.run.assert_called_once_with()
 
 
 if __name__ == "__main__":

@@ -4,6 +4,7 @@ import argparse
 import asyncio
 from pathlib import Path
 import platform
+import sys
 
 from rich.cells import get_character_cell_size
 from rich.text import Text
@@ -16,6 +17,11 @@ from textual.selection import Selection
 from textual.strip import Strip
 from textual.widgets import Button, DataTable, Footer, Header, Label, LoadingIndicator, RichLog, Static
 
+from . import __version__
+from .self_update import (
+    PreparedUpdate, Release, UpdateError, acknowledge_startup, apply_update,
+    check_for_update, discard_prepared_update, installation_root, prepare_update,
+)
 from .core import (
     AGENTS, AgentSpec, AgentStatus, StatusKind, UpdateCommand, UninstallPlan, config_paths,
     install_command, scan_agents, run_uninstall, run_update, uninstall_plan, update_command,
@@ -103,6 +109,37 @@ class ConfirmUpdate(ModalScreen[bool]):
         self.dismiss(True)
 
 
+class ConfirmAppUpdate(ModalScreen[bool]):
+    DEFAULT_CSS = """
+    ConfirmAppUpdate { align: center middle; background: $background 70%; }
+    ConfirmAppUpdate > Vertical { width: 72; height: auto; padding: 1 2; border: round $accent; background: $surface; }
+    ConfirmAppUpdate Horizontal { height: auto; align-horizontal: right; margin-top: 1; }
+    ConfirmAppUpdate Button { margin-left: 1; }
+    """
+    BINDINGS = [Binding("escape", "cancel", "취소", show=False)]
+
+    def __init__(self, release: Release) -> None:
+        super().__init__()
+        self.release = release
+
+    def compose(self) -> ComposeResult:
+        with Vertical():
+            yield Label(f"agents-status {__version__} → {self.release.version}")
+            yield Static(Text(f"릴리스 노트: {self.release.notes_url}"))
+            yield Static("다운로드와 검증을 마치면 앱을 종료하고 새 버전으로 다시 시작합니다.")
+            with Horizontal():
+                yield Button("나중에", id="later")
+                yield Button("업데이트 후 재시작", id="apply", variant="primary")
+
+    @on(Button.Pressed, "#later")
+    def action_cancel(self) -> None:
+        self.dismiss(False)
+
+    @on(Button.Pressed, "#apply")
+    def accept(self) -> None:
+        self.dismiss(True)
+
+
 class ConfirmQuit(ConfirmUpdate):
     BINDINGS = [Binding("escape", "keep_running", "계속 실행", show=False)]
 
@@ -183,6 +220,9 @@ class AgentsStatusApp(App[None]):
     Screen { layout: vertical; }
     Header HeaderClockSpace { display: none; }
     #app-version { dock: right; width: auto; padding: 0 1; content-align: right middle; height: 100%; }
+    #self-update-bar { height: 1; padding: 0 1; }
+    #self-update-status { width: 1fr; color: $text-muted; }
+    #self-update { width: auto; min-width: 0; height: 1; border: none; padding: 0 1; }
     #summary { height: 3; padding: 1 2; background: $boost; }
     DataTable { height: 1fr; }
     #actions { height: 1; padding: 0 1; }
@@ -207,12 +247,19 @@ class AgentsStatusApp(App[None]):
         self.statuses: list[AgentStatus] = []
         self.busy = False
         self._quitting = False
+        self.available_release: Release | None = None
+        self.prepared_update: PreparedUpdate | None = None
+        self._checking_release = False
+        self._preparing_update = False
         self.instructions_source = (instructions_source if instructions_source is not None else default_instructions_path()).expanduser().resolve()
 
     def compose(self) -> ComposeResult:
         with Header():
-            yield Label("v1.0.11", id="app-version")
+            yield Label(f"v{__version__}", id="app-version")
         yield Static("에이전트 정보를 조회하는 중입니다…", id="summary")
+        with Horizontal(id="self-update-bar"):
+            yield Label("", id="self-update-status")
+            yield Button("앱 업데이트 확인", id="self-update")
         yield DataTable(id="agents", cursor_type="row", zebra_stripes=True)
         with Horizontal(id="actions"):
             yield Button("새로고침", id="refresh", variant="default")
@@ -232,7 +279,10 @@ class AgentsStatusApp(App[None]):
     def on_mount(self) -> None:
         table = self.query_one(DataTable)
         table.add_columns("상태", "에이전트", "버전", "프로바이더", "실행 파일")
+        acknowledge_startup()
         self.load_statuses()
+        if installation_root() is not None:
+            self.check_app_release()
 
     @on(events.TextSelected)
     def copy_selection(self) -> None:
@@ -297,6 +347,72 @@ class AgentsStatusApp(App[None]):
         self.query_one("#delete", Button).disabled = disabled or status is None or status.status == StatusKind.MISSING
         self.query_one("#sync", Button).disabled = disabled or status is None
         self.query_one("#sync-all", Button).disabled = disabled
+        self.query_one("#self-update", Button).disabled = disabled or self._checking_release
+
+    @work(exclusive=True, group="release-check")
+    async def check_app_release(self, force: bool = False) -> None:
+        self._checking_release = True
+        self.query_one("#self-update", Button).disabled = True
+        status = self.query_one("#self-update-status", Label)
+        status.update("앱 새 버전 확인 중…")
+        try:
+            self.available_release = await asyncio.to_thread(check_for_update, force=force)
+            if self.available_release is not None:
+                status.update(f"새 버전 {self.available_release.version} 사용 가능")
+                self.query_one("#self-update", Button).label = "앱 업데이트"
+                self.notify(f"agents-status {self.available_release.version} 업데이트가 있습니다.", timeout=8)
+            else:
+                status.update(f"현재 버전 {__version__}")
+                self.query_one("#self-update", Button).label = "앱 업데이트 확인"
+        except (UpdateError, OSError, ValueError) as error:
+            status.update("앱 업데이트 확인 불가 · 현재 기능은 계속 사용할 수 있습니다.")
+            self.query_one("#log", RichLog).write(Text(f"앱 업데이트 확인 실패: {error}"))
+        finally:
+            self._checking_release = False
+            self.query_one("#self-update", Button).disabled = self.busy
+
+    @on(Button.Pressed, "#self-update")
+    def app_update_pressed(self) -> None:
+        if self.busy or self._checking_release:
+            return
+        if self.available_release is None:
+            self.check_app_release(force=True)
+            return
+        if installation_root() is None:
+            self.notify(
+                "소스·uv 설치는 자체 업데이트하지 않습니다. README의 릴리스 설치 전환 절차를 사용해 주세요.",
+                title="릴리스 설치 필요", severity="warning", timeout=10,
+            )
+            return
+        release = self.available_release
+        self.push_screen(ConfirmAppUpdate(release), lambda accepted: self._accept_app_update(release) if accepted else None)
+
+    def _accept_app_update(self, release: Release) -> None:
+        if self.busy or self._preparing_update:
+            return
+        self.busy = True
+        self._preparing_update = True
+        self._set_buttons(True)
+        self.prepare_app_update(release)
+
+    @work(exclusive=True, group="self-update")
+    async def prepare_app_update(self, release: Release) -> None:
+        self.query_one("#progress", LoadingIndicator).styles.display = "block"
+        self.query_one("#activity", Label).update("앱 업데이트 다운로드 및 검증 중…")
+        try:
+            self.prepared_update = await asyncio.to_thread(prepare_update, release)
+        except (UpdateError, OSError, ValueError) as error:
+            self.query_one("#log", RichLog).write(Text(f"앱 업데이트 실패: {error}"))
+            self.notify("앱 업데이트에 실패했습니다. 기존 버전을 유지합니다.", severity="error", timeout=8)
+        finally:
+            self._preparing_update = False
+            self.busy = False
+            self._set_buttons(False)
+            self.query_one("#progress", LoadingIndicator).styles.display = "none"
+            self.query_one("#activity", Label).update("")
+        if self.prepared_update is not None:
+            self._quitting = True
+            self.exit()
 
     @on(Button.Pressed, "#sync")
     def sync_pressed(self) -> None:
@@ -392,6 +508,9 @@ class AgentsStatusApp(App[None]):
         self.action_update()
 
     async def action_quit(self) -> None:
+        if self._preparing_update:
+            self.notify("앱 업데이트 검증이 끝날 때까지 기다려 주세요.", severity="warning")
+            return
         if self._quitting or isinstance(self.screen, ConfirmQuit):
             return
         if self.busy:
@@ -477,9 +596,33 @@ class AgentsStatusApp(App[None]):
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="AI 코딩 에이전트 상태 및 글로벌 지침 관리")
+    parser.add_argument("--version", action="version", version=f"agents-status {__version__}")
+    parser.add_argument("--self-check", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--instructions", type=Path, help="동기화할 글로벌 지침 원본 경로")
     args = parser.parse_args()
-    AgentsStatusApp(instructions_source=args.instructions).run()
+    if args.self_check:
+        source = default_instructions_path()
+        if not source.is_file() or not source.read_text(encoding="utf-8").strip():
+            parser.exit(1, "번들 글로벌 지침 파일을 읽을 수 없습니다.\n")
+        if get_character_cell_size("한") != 2:
+            parser.exit(1, "한글 렌더링 자원을 불러오지 못했습니다.\n")
+        print(f"agents-status {__version__} ready")
+        return
+    app = AgentsStatusApp(instructions_source=args.instructions)
+    try:
+        app.run()
+        if app.return_code:
+            raise SystemExit(app.return_code)
+        if isinstance(app.prepared_update, PreparedUpdate):
+            try:
+                result = apply_update(app.prepared_update, sys.argv[1:])
+            except (UpdateError, OSError, ValueError) as error:
+                print(f"앱 업데이트 실패: {error}", file=sys.stderr)
+                result = 1
+            raise SystemExit(result)
+    finally:
+        if isinstance(app.prepared_update, PreparedUpdate):
+            discard_prepared_update(app.prepared_update)
 
 
 if __name__ == "__main__":
