@@ -1,6 +1,6 @@
 """AI 코딩 에이전트 상태 조사 패키지."""
 
-__version__ = "1.0.19"
+__version__ = "1.0.20"
 
 from .core import AgentStatus, StatusKind, scan_agents
 
