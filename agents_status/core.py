@@ -571,9 +571,10 @@ def _package_names(key: str) -> tuple[str, ...]:
 
 def _winget_package_directory(resolved: Path, packages: Path) -> str:
     """WinGet 패키지 루트 기준으로 실행 파일이 속한 <패키지 ID>_<원본 식별자> 디렉터리 이름."""
-    if resolved.is_relative_to(packages):
-        return resolved.relative_to(packages).parts[0]
-    if resolved.parent != packages.parent / "Links" or not packages.is_dir():
+    canonical = packages.resolve()
+    if resolved.is_relative_to(canonical):
+        return resolved.relative_to(canonical).parts[0]
+    if resolved.parent != (packages.parent / "Links").resolve() or not packages.is_dir():
         return ""
     # 자체 업데이트(copilot update 등)가 Links의 심볼릭 링크를 실제 파일로 바꾼 경우 패키지 디렉터리에서
     # 같은 이름의 실행 파일을 찾아 대응함. Windows 파일 이름은 대소문자를 구분하지 않으므로(copilot.EXE 등)
@@ -610,7 +611,7 @@ def _winget_uninstall(resolved: Path, base: Path) -> tuple[UninstallPlan | None,
             return None, f"WinGet 패키지({identifier})이지만 winget 명령을 찾을 수 없습니다."
         argv = (winget, "uninstall", "--id", identifier, "--exact", "--purge", "--force", "--disable-interactivity", "--accept-source-agreements")
         paths: tuple[Path, ...] = ()
-        if resolved.parent == root.parent / "Links" and not resolved.is_symlink():
+        if resolved.parent == (root.parent / "Links").resolve() and not resolved.is_symlink():
             # 백업 이름(copilot.exe.old-<pid>-<time>)은 실행 파일 이름(copilot.EXE 등)과 대소문자가 다를 수 있음.
             prefix = f"{resolved.name.lower()}.old"
             backups = sorted(child for child in resolved.parent.iterdir() if child.name.lower().startswith(prefix) and child.is_file())
@@ -728,6 +729,8 @@ def uninstall_plan(status: AgentStatus, *, home: Path | None = None) -> tuple[Un
         return UninstallPlan(paths=shims), ""
     base = Path.home() if home is None else home
     resolved = executable.resolve()
+    # 상위 디렉터리 별칭만 정규화하고 삭제할 마지막 심볼릭 링크는 보존함.
+    location = executable.parent.resolve() / executable.name
     plan, reason = _winget_uninstall(resolved, base)
     if plan:
         return plan, ""
@@ -737,20 +740,20 @@ def uninstall_plan(status: AgentStatus, *, home: Path | None = None) -> tuple[Un
         root = base / ".local/share/claude"
         # Windows 네이티브 설치는 Unix의 심볼릭 링크 대신 bin에 PE 실행 파일을 둠.
         windows_native = (
-            executable.parent == base / ".local/bin"
+            location.parent == (base / ".local/bin").resolve()
             and executable.name.lower() == "claude.exe"
             and not executable.is_symlink()
             and _is_native_binary(executable, _PE_MAGIC)
         )
-        if resolved.is_relative_to(root) or windows_native:
+        if resolved.is_relative_to(root.resolve()) or windows_native:
             return UninstallPlan(paths=(executable, root)), ""
-    if status.spec.key == "codex" and resolved.is_relative_to(_codex_packages(base) / "standalone"):
+    if status.spec.key == "codex" and resolved.is_relative_to((_codex_packages(base) / "standalone").resolve()):
         # 공식 설치 스크립트는 ~/.local/bin/codex 링크(macOS는 codex-code-mode-host 링크 추가)와
         # ~/.codex/packages 아래 standalone·app-server-daemon 패키지를 설치함.
         packages = _codex_packages(base)
         paths = [executable]
         host = executable.parent / "codex-code-mode-host"
-        if host.is_symlink() and host.resolve().is_relative_to(packages / "standalone"):
+        if host.is_symlink() and host.resolve().is_relative_to((packages / "standalone").resolve()):
             paths.append(host)
         paths.extend(root for root in (packages / "standalone", packages / "app-server-daemon") if root.is_dir())
         # 데몬 상태 폴더(pid·로그·lock)가 남으면 재설치 후 daemon start가 기존 설치 손상으로 판단해 설치하지 않음.
@@ -763,11 +766,11 @@ def uninstall_plan(status: AgentStatus, *, home: Path | None = None) -> tuple[Un
             argv = (str(executable), "app-server", "daemon", "stop")
             prepare = UpdateCommand(argv, "codex app-server daemon stop")
         return UninstallPlan(paths=tuple(paths), prepare=prepare), ""
-    if status.spec.key == "opencode" and executable == base / ".opencode/bin/opencode":
+    if status.spec.key == "opencode" and location == (base / ".opencode/bin").resolve() / "opencode":
         return UninstallPlan(paths=(executable,)), ""
     if (
         status.spec.key == "kilo"
-        and executable.parent == base / ".kilo/bin"
+        and location.parent == (base / ".kilo/bin").resolve()
         and executable.stem.lower() == "kilo"
         and not executable.is_symlink()
         and "node_modules" not in resolved.parts
@@ -785,7 +788,7 @@ def uninstall_plan(status: AgentStatus, *, home: Path | None = None) -> tuple[Un
         # 공식 설치 스크립트의 단일 바이너리. Windows 기본 위치 %LOCALAPPDATA%\omp는 전용 디렉터리이므로
         # 디렉터리째 삭제하고, 그 외(~/.local/bin 등 공용 디렉터리)는 실행 파일만 삭제함.
         dedicated = Path(os.environ.get("LOCALAPPDATA", str(base / "AppData/Local"))) / "omp"
-        if sys.platform == "win32" and resolved.parent == dedicated:
+        if sys.platform == "win32" and resolved.parent == dedicated.resolve():
             return UninstallPlan(paths=(dedicated,)), ""
         return UninstallPlan(paths=(executable,)), ""
     if status.spec.key == "hermes":
@@ -795,21 +798,24 @@ def uninstall_plan(status: AgentStatus, *, home: Path | None = None) -> tuple[Un
         # Windows는 bin 런처 또는 venv 진입점을 등록함.
         root = _hermes_checkout(executable, resolved)
         if root:
-            paths = (root,) if executable.is_relative_to(root) else (executable, root)
-            if sys.platform == "win32" and executable.parent == root.parent / "bin":
+            inside = location.is_relative_to(root.resolve())
+            paths = (root,) if inside else (executable, root)
+            if sys.platform == "win32" and location.parent == (root.parent / "bin").resolve():
                 # bin의 uv 등 공용 도구는 보존하고 Hermes 및 ACP 런처만 함께 제거함.
                 companions = tuple(
                     candidate for name in ("hermes.exe", "hermes.cmd", "hermes-acp.exe", "hermes-acp.cmd")
-                    if (candidate := executable.parent / name) != executable and candidate.is_file()
+                    if (candidate := executable.parent / name).is_file()
+                    and not (candidate.name.casefold() == executable.name.casefold() and candidate.samefile(executable))
                 )
                 paths = (executable, *companions, root)
-            elif sys.platform != "win32" and not executable.is_relative_to(root):
+            elif sys.platform != "win32" and not inside:
                 # 같은 체크아웃을 가리키는 보조 shim만 함께 제거함.
                 companions = tuple(
                     candidate for name in ("hermes-agent", "hermes-acp")
                     if (candidate := executable.parent / name) != executable
                     and (candidate.is_file() or candidate.is_symlink())
-                    and _hermes_checkout(candidate, candidate.resolve()) == root
+                    and (checkout := _hermes_checkout(candidate, candidate.resolve())) is not None
+                    and checkout.resolve() == root.resolve()
                 )
                 paths = (executable, *companions, root)
             variables = ("HERMES_HOME",) if sys.platform == "win32" else ()
@@ -819,7 +825,7 @@ def uninstall_plan(status: AgentStatus, *, home: Path | None = None) -> tuple[Un
         # (또는 --dir 지정 경로)로 단일 바이너리를 설치하며 agy update는 같은 폴더에 .old 백업을 남김.
         install_root = Path(os.environ.get("LOCALAPPDATA", str(base / "AppData/Local"))) / "agy"
         if "node_modules" not in resolved.parts and _is_native_binary(resolved, _PE_MAGIC + _UNIX_MAGIC):
-            if resolved.parent == install_root / "bin":
+            if resolved.parent == (install_root / "bin").resolve():
                 return UninstallPlan(paths=(install_root,)), ""
             return UninstallPlan(paths=(executable,)), ""
     if status.spec.key == "pi" and (managed := _pi_managed_install(executable, resolved)):
@@ -846,7 +852,7 @@ def uninstall_plan(status: AgentStatus, *, home: Path | None = None) -> tuple[Un
         ):
             links = (executable,) if executable.is_symlink() else ()
             return UninstallPlan(paths=(*links, resolved.parent)), ""
-    if executable.parent == base / ".local/bin" and not executable.is_symlink() and "node_modules" not in resolved.parts:
+    if location.parent == (base / ".local/bin").resolve() and not executable.is_symlink() and "node_modules" not in resolved.parts:
         # 독립 실행 바이너리만 제거하며 스크립트 기반 설치는 별도 판별이 필요함.
         if _is_native_binary(executable, _UNIX_MAGIC):
             return UninstallPlan(paths=(executable,)), ""
@@ -898,7 +904,7 @@ def _hermes_checkout(executable: Path, resolved: Path) -> Path | None:
         if valid_launcher and (root / "hermes_cli").is_dir() and (root / "venv/Scripts/hermes.exe").is_file():
             return root
     target = resolved
-    if executable == resolved and not _is_native_binary(resolved, _PE_MAGIC + _UNIX_MAGIC):
+    if not executable.is_symlink() and not _is_native_binary(resolved, _PE_MAGIC + _UNIX_MAGIC):
         # shim은 exec "<경로>" 또는 exec <경로> 형식으로 체크아웃의 진입점을 호출함.
         match = re.search(r'^exec\s+(?:"([^"]+)"|(\S+))', _read(executable), re.MULTILINE)
         if match:
@@ -1026,7 +1032,7 @@ def update_command(status: AgentStatus, *, home: Path | None = None) -> tuple[Up
         if ("node_modules" in _shim_target(status.executable).parts
                 or (status.executable.parent / "node_modules/pi-bolt/package.json").is_file()):
             return None, "Pi-Bolt 패키지 설치 경로에서 업데이트에 필요한 npm/Bun을 찾을 수 없습니다."
-    if spec.key == "codex" and status.executable.resolve().is_relative_to(_codex_packages(home) / "standalone"):
+    if spec.key == "codex" and status.executable.resolve().is_relative_to((_codex_packages(home) / "standalone").resolve()):
         # 공식 설치 스크립트 설치는 codex update가 같은 스크립트를 비대화형으로 다시 실행하여 갱신함.
         argv = (str(status.executable), "update")
         return UpdateCommand(argv, "codex update"), ""

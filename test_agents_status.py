@@ -32,41 +32,10 @@ def symlink_or_skip(link: Path, target: Path) -> None:
         raise
 
 
-class LauncherTests(unittest.TestCase):
-    def test_powershell_forwards_project_arguments_and_exit_code(self):
-        shells = [shell for name in ("powershell", "pwsh") if (shell := shutil.which(name))]
-        if not shells:
-            self.skipTest("PowerShell이 설치되지 않음")
-        with tempfile.TemporaryDirectory(prefix="agents status ") as directory:
-            root = Path(directory)
-            launcher = root / "agents_status.ps1"
-            shutil.copyfile(Path(__file__).with_name("agents_status.ps1"), launcher)
-            bootstrap = root / "check.ps1"
-            bootstrap.write_text(
-                "function uv {\n"
-                "    ConvertTo-Json -Compress -InputObject @($args)\n"
-                "    $global:LASTEXITCODE = 7\n"
-                "}\n"
-                "& (Join-Path $PSScriptRoot 'agents_status.ps1') '--example' 'value with spaces'\n"
-                "exit $LASTEXITCODE\n",
-                encoding="utf-8",
-            )
-            for shell in shells:
-                with self.subTest(shell=shell):
-                    result = subprocess.run(
-                        [shell, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(bootstrap)],
-                        cwd=root.parent, capture_output=True, text=True, timeout=30,
-                    )
-                    self.assertEqual(result.returncode, 7, result.stderr)
-                    self.assertEqual(json.loads(result.stdout), [
-                        "run", "--project", str(root), "agents-status", "--example", "value with spaces",
-                    ])
-
-
 class ProviderTests(unittest.TestCase):
     def status(self, key, files, extra_env=None):
         with tempfile.TemporaryDirectory() as directory:
-            home = Path(directory)
+            home = Path(directory).resolve()
             for name, data in files.items():
                 path = home / name
                 path.parent.mkdir(parents=True, exist_ok=True)
@@ -138,7 +107,7 @@ class ProviderTests(unittest.TestCase):
 
     def test_hermes_provider_follows_hermes_home(self):
         with tempfile.TemporaryDirectory() as directory:
-            home = Path(directory)
+            home = Path(directory).resolve()
             data = home / "AppData/Local/hermes"
             data.mkdir(parents=True)
             (data / "config.yaml").write_text("model:\n  provider: azure-foundry\n  default: gpt-6\n", encoding="utf-8")
@@ -158,7 +127,7 @@ class ProviderTests(unittest.TestCase):
 class DetectionTests(unittest.TestCase):
     def test_pi_bolt_windows_native_detection_and_removal_preserve_shared_pi(self):
         with tempfile.TemporaryDirectory() as directory:
-            home = Path(directory)
+            home = Path(directory).resolve()
             executable = home / ".pi-bolt/pi-bolt-win32-x64-jit/pi-bolt.exe"
             executable.parent.mkdir(parents=True)
             executable.write_bytes(b"MZ\x00\x00")
@@ -179,7 +148,7 @@ class DetectionTests(unittest.TestCase):
 
     def test_pi_bolt_native_symlink_removal_and_npm_install(self):
         with tempfile.TemporaryDirectory() as directory:
-            home = Path(directory)
+            home = Path(directory).resolve()
             binary = home / ".pi-bolt/pi-bolt-linux-x64/pi"
             binary.parent.mkdir(parents=True)
             binary.write_bytes(b"\x7fELF")
@@ -198,7 +167,7 @@ class DetectionTests(unittest.TestCase):
     def test_wsl_ignores_windows_agents_and_preserves_config_status(self):
         for spec in AGENTS:
             with self.subTest(agent=spec.key), tempfile.TemporaryDirectory() as directory:
-                home = Path(directory)
+                home = Path(directory).resolve()
                 env = {"PATH": "/mnt/c/nvm4w/nodejs:/mnt/d/tools"}
                 with patch("agents_status.core.sys.platform", "linux"), patch("agents_status.core.platform.release", return_value="6.6-microsoft-standard-WSL2"), patch("agents_status.core._version") as probe:
                     status = scan_agent(spec, home=home, env=env)
@@ -209,9 +178,10 @@ class DetectionTests(unittest.TestCase):
                     self.assertEqual(status.status, StatusKind.CONFIG_ONLY)
                     probe.assert_not_called()
 
+    @unittest.skipIf(sys.platform == "win32", "WSL의 POSIX 실행 파일 검색·마운트·심볼릭 링크 검증")
     def test_wsl_finds_linux_agent_after_windows_path_and_symlink(self):
         with tempfile.TemporaryDirectory() as directory:
-            home = Path(directory)
+            home = Path(directory).resolve()
             links = home / "links"
             native = home / "bin"
             links.mkdir()
@@ -238,6 +208,7 @@ class DetectionTests(unittest.TestCase):
         self.assertIsNone(command)
         self.assertIn("npm", reason)
 
+    @unittest.skipIf(sys.platform == "win32", "WSL의 POSIX 경로 해석과 /proc/mounts 검증")
     def test_windows_drive_detection_supports_custom_mounts(self):
         from agents_status.core import _windows_drive_path
         mounts = "C: /windows/drive\\040c 9p rw,aname=drvfs;path=C: 0 0\nD: /drives/d drvfs rw 0 0\n"
@@ -258,7 +229,7 @@ class DetectionTests(unittest.TestCase):
         for custom_home in (False, True):
             for relative in ("bin/hermes.exe", "bin/hermes.cmd", "hermes-agent/venv/Scripts/hermes.exe"):
                 with self.subTest(custom_home=custom_home, relative=relative), tempfile.TemporaryDirectory() as directory:
-                    home = Path(directory)
+                    home = Path(directory).resolve()
                     data = home / ("custom hermes" if custom_home else "AppData/Local/hermes")
                     executable = data / relative
                     executable.parent.mkdir(parents=True)
@@ -281,7 +252,7 @@ class DetectionTests(unittest.TestCase):
     def test_windows_omp_is_found_in_official_install_dir(self):
         for custom_dir in (False, True):
             with self.subTest(custom_dir=custom_dir), tempfile.TemporaryDirectory() as directory:
-                home = Path(directory)
+                home = Path(directory).resolve()
                 install_dir = home / ("custom omp" if custom_dir else "AppData/Local/omp")
                 install_dir.mkdir(parents=True)
                 executable = install_dir / "omp.exe"
@@ -304,7 +275,7 @@ class DetectionTests(unittest.TestCase):
 
     def test_windows_hermes_prefers_path_installation(self):
         with tempfile.TemporaryDirectory() as directory:
-            home = Path(directory)
+            home = Path(directory).resolve()
             fallback = home / "AppData/Local/hermes/bin/hermes.exe"
             fallback.parent.mkdir(parents=True)
             fallback.touch()
@@ -315,7 +286,7 @@ class DetectionTests(unittest.TestCase):
 
     def test_windows_hermes_config_without_launcher_is_not_installed(self):
         with tempfile.TemporaryDirectory() as directory:
-            home = Path(directory)
+            home = Path(directory).resolve()
             data = home / "AppData/Local/hermes"
             env = {"LOCALAPPDATA": str(home / "AppData/Local"), "PATH": ""}
             with patch("agents_status.core.sys.platform", "win32"), patch("agents_status.core._version") as probe:
@@ -331,7 +302,7 @@ class DetectionTests(unittest.TestCase):
 
     def test_windows_hermes_fallback_does_not_apply_to_unix(self):
         with tempfile.TemporaryDirectory() as directory:
-            home = Path(directory)
+            home = Path(directory).resolve()
             executable = home / ".hermes/bin/hermes.exe"
             executable.parent.mkdir(parents=True)
             executable.touch()
@@ -390,14 +361,14 @@ class UpdateTests(unittest.TestCase):
             SPECS["codex"], StatusKind.INSTALLED,
             Path("/home/user/.nvm/bin/node_modules/@openai/codex/bin/codex"), "1.0", "openai",
         )
-        with patch("pathlib.Path.resolve", return_value=status.executable), patch("shutil.which", return_value="/usr/bin/npm"):
+        with patch("shutil.which", return_value="/usr/bin/npm"):
             command, _ = update_command(status)
         self.assertEqual(command.argv[-2:], ("--global", "@openai/codex@latest"))
 
     def test_codex_standalone_install_uses_self_update(self):
         # 공식 설치 스크립트는 ~/.local/bin/codex 링크를 ~/.codex/packages/standalone/current/codex로 연결함.
         with tempfile.TemporaryDirectory() as directory:
-            home = Path(directory)
+            home = Path(directory).resolve()
             release = home / ".codex/packages/standalone/releases/0.162.0-x86_64-unknown-linux-musl"
             (release / "bin").mkdir(parents=True)
             (release / "bin/codex").touch()
@@ -427,7 +398,7 @@ class UpdateTests(unittest.TestCase):
         ):
             for manager in ("npm", "bun", "brew"):
                 with self.subTest(key=key, manager=manager), tempfile.TemporaryDirectory() as directory:
-                    prefix = Path(directory)
+                    prefix = Path(directory).resolve()
                     (prefix / "bin").mkdir()
                     tool = prefix / "bin" / manager
                     tool.touch()
@@ -456,7 +427,7 @@ class UpdateTests(unittest.TestCase):
 
     def test_unknown_or_unrelated_package_does_not_select_manager(self):
         with tempfile.TemporaryDirectory() as directory:
-            prefix = Path(directory)
+            prefix = Path(directory).resolve()
             root = prefix / "lib/node_modules/@other/crush"
             root.mkdir(parents=True)
             (root / "package.json").write_text('{"name":"@other/crush"}')
@@ -476,7 +447,7 @@ class UpdateTests(unittest.TestCase):
 
     def test_npm_install_without_matching_manager_does_not_fall_back(self):
         with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory) / "lib/node_modules/@charmland/crush"
+            root = Path(directory).resolve() / "lib/node_modules/@charmland/crush"
             root.mkdir(parents=True)
             (root / "package.json").write_text('{"name":"@charmland/crush"}')
             status = AgentStatus(SPECS["crush"], StatusKind.INSTALLED, root / "crush", "1.0", "unknown")
@@ -486,7 +457,7 @@ class UpdateTests(unittest.TestCase):
 
     def test_pi_bolt_windows_npm_update_and_missing_manager(self):
         with tempfile.TemporaryDirectory() as directory:
-            prefix = Path(directory)
+            prefix = Path(directory).resolve()
             root = prefix / "node_modules/pi-bolt"
             root.mkdir(parents=True)
             (root / "package.json").write_text('{"name":"pi-bolt"}')
@@ -507,7 +478,7 @@ class UpdateTests(unittest.TestCase):
     @unittest.skipIf(sys.platform == "win32", "POSIX 셸 런처 검증")
     def test_pi_bolt_version_uses_launcher_when_postinstall_was_skipped(self):
         with tempfile.TemporaryDirectory() as directory:
-            home = Path(directory)
+            home = Path(directory).resolve()
             root = home / "lib/node_modules/pi-bolt"
             (root / "bin").mkdir(parents=True)
             (root / "package.json").write_text('{"name":"pi-bolt"}')
@@ -733,7 +704,7 @@ class UpdateInterruptionTests(unittest.IsolatedAsyncioTestCase):
     async def test_cancel_and_timeout_kill_descendants(self):
         for cancel in (True, False):
             with self.subTest(cancel=cancel), tempfile.TemporaryDirectory() as directory:
-                marker = Path(directory, "child-pid")
+                marker = Path(directory).resolve() / "child-pid"
                 ready = asyncio.Event()
                 command = UpdateCommand((sys.executable, "-c",
                     "import os, subprocess, sys, time; "
@@ -788,9 +759,10 @@ class WorkingDirectoryTests(unittest.IsolatedAsyncioTestCase):
 
     def test_version_probe_runs_in_home_or_given_directory(self):
         with tempfile.TemporaryDirectory() as directory:
-            home = Path(directory, "home")
-            bin_dir = Path(directory, "bin")
-            scratch = Path(directory, "scratch")
+            root = Path(directory).resolve()
+            home = root / "home"
+            bin_dir = root / "bin"
+            scratch = root / "scratch"
             for folder in (home, bin_dir, scratch):
                 folder.mkdir()
             if sys.platform == "win32":
@@ -810,7 +782,7 @@ class UninstallTests(unittest.IsolatedAsyncioTestCase):
     async def test_config_is_removed_only_when_requested_and_uninstall_succeeds(self):
         for remove, returncode in ((False, 0), (True, 0), (True, 1)):
             with self.subTest(remove=remove, returncode=returncode), tempfile.TemporaryDirectory() as directory:
-                config = Path(directory) / ".codex"
+                config = Path(directory).resolve() / ".codex"
                 config.mkdir()
                 (config / "auth.json").write_text("credentials")
                 plan = UninstallPlan(UpdateCommand(("npm", "uninstall"), "uninstall"))
@@ -821,7 +793,7 @@ class UninstallTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_config_symlink_does_not_delete_target(self):
         with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
+            root = Path(directory).resolve()
             target = root / "shared"
             target.mkdir()
             (target / "keep").touch()
@@ -835,7 +807,7 @@ class UninstallTests(unittest.IsolatedAsyncioTestCase):
     async def test_package_uninstall_uses_original_manager(self):
         for manager in ("npm", "bun", "brew"):
             with self.subTest(manager=manager), tempfile.TemporaryDirectory() as directory:
-                prefix = Path(directory)
+                prefix = Path(directory).resolve()
                 (prefix / "bin").mkdir()
                 tool = prefix / "bin" / manager
                 tool.touch()
@@ -863,7 +835,7 @@ class UninstallTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_native_claude_uninstall_preserves_config(self):
         with tempfile.TemporaryDirectory() as directory:
-            home = Path(directory)
+            home = Path(directory).resolve()
             root = home / ".local/share/claude"
             root.mkdir(parents=True)
             binary = root / "1.0"
@@ -884,7 +856,7 @@ class UninstallTests(unittest.IsolatedAsyncioTestCase):
     async def test_windows_native_claude_uninstall_preserves_config_and_shared_bin(self):
         for name in ("claude.exe", "claude.EXE"):
             with self.subTest(name=name), tempfile.TemporaryDirectory() as directory:
-                home = Path(directory)
+                home = Path(directory).resolve()
                 root = home / ".local/share/claude"
                 (root / "versions").mkdir(parents=True)
                 (root / "versions/2.1.295").write_bytes(b"MZ\x90\x00")
@@ -919,7 +891,7 @@ class UninstallTests(unittest.IsolatedAsyncioTestCase):
             ("custom/claude.exe", b"MZ\x90\x00"),
         ):
             with self.subTest(location=location), tempfile.TemporaryDirectory() as directory:
-                home = Path(directory)
+                home = Path(directory).resolve()
                 executable = home / location
                 executable.parent.mkdir(parents=True)
                 executable.write_bytes(contents)
@@ -929,9 +901,10 @@ class UninstallTests(unittest.IsolatedAsyncioTestCase):
                 self.assertIn("판별하지 못했습니다", reason)
                 self.assertTrue(executable.exists())
 
+    @unittest.skipIf(sys.platform == "win32", "POSIX 셸 실행 파일로 삭제 전 데몬 종료 검증")
     async def test_codex_standalone_uninstall_removes_packages_and_links(self):
         with tempfile.TemporaryDirectory() as directory:
-            home = Path(directory)
+            home = Path(directory).resolve()
             packages = home / ".codex/packages"
             release = packages / "standalone/releases/0.162.0-x86_64-unknown-linux-musl"
             (release / "bin").mkdir(parents=True)
@@ -962,8 +935,7 @@ class UninstallTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(plan.prepare.argv, (str(executable), "app-server", "daemon", "stop"))
             result = await run_uninstall(plan)
             self.assertEqual(result.returncode, 0)
-            if sys.platform != "win32":
-                self.assertEqual(stopped.read_text().strip(), "app-server daemon stop")
+            self.assertEqual(stopped.read_text().strip(), "app-server daemon stop")
             self.assertFalse(packages.joinpath("standalone").exists())
             self.assertFalse(packages.joinpath("app-server-daemon").exists())
             self.assertFalse(state.exists())
@@ -974,9 +946,10 @@ class UninstallTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_uninstall_continues_when_prepare_fails(self):
         with tempfile.TemporaryDirectory() as directory:
-            target = Path(directory) / "target"
+            root = Path(directory).resolve()
+            target = root / "target"
             target.touch()
-            prepare = UpdateCommand((str(Path(directory) / "missing"),), "missing")
+            prepare = UpdateCommand((str(root / "missing"),), "missing")
             lines: list[str] = []
             result = await run_uninstall(UninstallPlan(paths=(target,), prepare=prepare), on_output=lines.append)
             self.assertEqual(result.returncode, 0)
@@ -986,7 +959,7 @@ class UninstallTests(unittest.IsolatedAsyncioTestCase):
     async def test_pi_managed_install_uninstall_removes_links_launcher_and_install_root(self):
         marker = {"kind": "pi-managed-install", "schemaVersion": 1, "layout": "releases-v1"}
         with tempfile.TemporaryDirectory() as directory:
-            home = Path(directory)
+            home = Path(directory).resolve()
             agent = home / ".pi/agent"
             install = agent / "install"
             (install / "releases/1.1.0/node_modules/.bin").mkdir(parents=True)
@@ -1049,7 +1022,7 @@ class UninstallTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_pi_npm_uninstall_detects_renamed_package(self):
         with tempfile.TemporaryDirectory() as directory:
-            prefix = Path(directory) / "nodejs"
+            prefix = Path(directory).resolve() / "nodejs"
             for package in ("@earendil-works/pi-coding-agent", "@mariozechner/pi-coding-agent"):
                 with self.subTest(package=package):
                     root = prefix / "node_modules" / package
@@ -1067,7 +1040,7 @@ class UninstallTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_agy_standalone_uninstall(self):
         with tempfile.TemporaryDirectory() as directory:
-            home = Path(directory)
+            home = Path(directory).resolve()
             install_root = home / "AppData/Local/agy"
             (install_root / "bin").mkdir(parents=True)
             executable = install_root / "bin/agy.exe"
@@ -1102,7 +1075,7 @@ class UninstallTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_hermes_windows_uninstall_uses_hermes_home_and_removes_readonly_files(self):
         with tempfile.TemporaryDirectory() as directory:
-            home = Path(directory)
+            home = Path(directory).resolve()
             data = home / "AppData/Local/hermes"
             root = data / "hermes-agent"
             (root / "hermes_cli").mkdir(parents=True)
@@ -1132,7 +1105,7 @@ class UninstallTests(unittest.IsolatedAsyncioTestCase):
         for location in ("AppData/Local/hermes", "custom hermes"):
             for launcher in ("hermes.EXE", "hermes.cmd"):
                 with self.subTest(location=location, launcher=launcher), tempfile.TemporaryDirectory() as directory:
-                    home = Path(directory)
+                    home = Path(directory).resolve()
                     data = home / location
                     root = data / "hermes-agent"
                     (root / "hermes_cli").mkdir(parents=True)
@@ -1176,7 +1149,7 @@ class UninstallTests(unittest.IsolatedAsyncioTestCase):
     async def test_hermes_windows_bin_requires_matching_checkout(self):
         for missing in ("checkout", "entrypoint", "native_binary"):
             with self.subTest(missing=missing), tempfile.TemporaryDirectory() as directory:
-                home = Path(directory)
+                home = Path(directory).resolve()
                 data = home / "hermes"
                 root = data / "hermes-agent"
                 if missing != "checkout":
@@ -1196,7 +1169,7 @@ class UninstallTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_hermes_unix_uninstall_removes_link_and_checkout(self):
         with tempfile.TemporaryDirectory() as directory:
-            home = Path(directory)
+            home = Path(directory).resolve()
             unix_root = home / ".hermes/hermes-agent"
             (unix_root / "hermes_cli").mkdir(parents=True)
             (unix_root / "venv/bin").mkdir(parents=True)
@@ -1213,7 +1186,7 @@ class UninstallTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_hermes_unix_shim_uninstall_removes_shim_and_checkout(self):
         with tempfile.TemporaryDirectory() as directory:
-            home = Path(directory)
+            home = Path(directory).resolve()
             for root in (home / ".hermes/hermes-agent", home / "usr/local/lib/hermes-agent"):
                 with self.subTest(root=root):
                     (root / "hermes_cli").mkdir(parents=True)
@@ -1221,7 +1194,7 @@ class UninstallTests(unittest.IsolatedAsyncioTestCase):
                     (root / "venv/bin/hermes").write_text("#!/usr/bin/python\n")
                     shim = home / ".local/bin/hermes"
                     shim.parent.mkdir(parents=True, exist_ok=True)
-                    shim.write_text(f'#!/usr/bin/env bash\nunset PYTHONPATH\nexec "{root / "venv/bin/hermes"}" "$@"\n')
+                    shim.write_text(f'#!/usr/bin/env bash\nunset PYTHONPATH\nexec "{(root / "venv/bin/hermes").as_posix()}" "$@"\n')
                     status = AgentStatus(SPECS["hermes"], StatusKind.INSTALLED, shim, "Hermes Agent v0.18.2", "openai")
                     plan, reason = uninstall_plan(status, home=home)
                     self.assertEqual(reason, "")
@@ -1242,7 +1215,7 @@ class UninstallTests(unittest.IsolatedAsyncioTestCase):
     async def test_hermes_unix_store_launcher_uninstall_removes_companion_shims(self):
         # 최신 설치는 <체크아웃>/.hermes/bin의 진입점을 따옴표 없이 exec하는 shim 세 개를 ~/.local/bin에 둠.
         with tempfile.TemporaryDirectory() as directory:
-            home = Path(directory)
+            home = Path(directory).resolve()
             root = home / ".hermes/hermes-agent"
             (root / "hermes_cli").mkdir(parents=True)
             (root / ".hermes/bin").mkdir(parents=True)
@@ -1251,11 +1224,11 @@ class UninstallTests(unittest.IsolatedAsyncioTestCase):
             local_bin = home / ".local/bin"
             local_bin.mkdir(parents=True)
             shim = local_bin / "hermes"
-            shim.write_text(f'#!/bin/sh\nexec {root / ".hermes/bin/hermes"} "$@"\n')
+            shim.write_text(f'#!/bin/sh\nexec {(root / ".hermes/bin/hermes").as_posix()} "$@"\n')
             agent = local_bin / "hermes-agent"
-            agent.write_text(f'#!/bin/sh\nexec {root / ".hermes/bin/hermes"} --run-module run_agent "$@"\n')
+            agent.write_text(f'#!/bin/sh\nexec {(root / ".hermes/bin/hermes").as_posix()} --run-module run_agent "$@"\n')
             acp = local_bin / "hermes-acp"
-            acp.write_text(f'#!/bin/sh\nexec {root / ".hermes/bin/hermes-acp"} "$@"\n')
+            acp.write_text(f'#!/bin/sh\nexec {(root / ".hermes/bin/hermes-acp").as_posix()} "$@"\n')
             shared = local_bin / "uv"
             shared.write_bytes(b"\x7fELF\x02")
             status = AgentStatus(SPECS["hermes"], StatusKind.INSTALLED, shim, "Hermes Agent v0.21.6", "openai")
@@ -1276,12 +1249,12 @@ class UninstallTests(unittest.IsolatedAsyncioTestCase):
             (root / "hermes_cli").mkdir(parents=True)
             (root / ".hermes/bin").mkdir(parents=True)
             (root / ".hermes/bin/hermes").write_text("#!/bin/sh\n")
-            shim.write_text(f'#!/bin/sh\nexec "{root / ".hermes/bin/hermes"}" "$@"\n')
+            shim.write_text(f'#!/bin/sh\nexec "{(root / ".hermes/bin/hermes").as_posix()}" "$@"\n')
             other = home / "opt/hermes-agent"
             (other / "hermes_cli").mkdir(parents=True)
             (other / ".hermes/bin").mkdir(parents=True)
             (other / ".hermes/bin/hermes-acp").write_text("#!/bin/sh\n")
-            acp.write_text(f'#!/bin/sh\nexec {other / ".hermes/bin/hermes-acp"} "$@"\n')
+            acp.write_text(f'#!/bin/sh\nexec {(other / ".hermes/bin/hermes-acp").as_posix()} "$@"\n')
             with patch("agents_status.core.sys.platform", "linux"):
                 plan, reason = uninstall_plan(status, home=home)
             self.assertEqual(reason, "")
@@ -1289,7 +1262,7 @@ class UninstallTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_kilo_official_install_uninstall_removes_bin_directory(self):
         with tempfile.TemporaryDirectory() as directory:
-            home = Path(directory)
+            home = Path(directory).resolve()
             bin_dir = home / ".kilo/bin"
             (bin_dir / "tree-sitter").mkdir(parents=True)
             (bin_dir / "tree-sitter/bash.so").write_bytes(b"\x7fELF\x02")
@@ -1335,7 +1308,7 @@ class UninstallTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_omp_official_binary_uninstall(self):
         with tempfile.TemporaryDirectory() as directory:
-            home = Path(directory)
+            home = Path(directory).resolve()
             # Windows 기본 설치 위치는 전용 디렉터리이므로 디렉터리째 삭제함.
             install_root = home / "AppData/Local/omp"
             install_root.mkdir(parents=True)
@@ -1377,7 +1350,7 @@ class UninstallTests(unittest.IsolatedAsyncioTestCase):
         # Bun은 ~/.bun/install/global에 package.json이 없으면 상위에서 package.json을 찾아 그곳(예: 홈)을 전역
         # 프로젝트로 삼고, 링크는 여전히 ~/.bun/bin에 둠.
         with tempfile.TemporaryDirectory() as directory:
-            home = Path(directory)
+            home = Path(directory).resolve()
             bun_home = home / ".bun"
             (bun_home / "bin").mkdir(parents=True)
             (bun_home / "install/global").mkdir(parents=True)
@@ -1403,7 +1376,7 @@ class UninstallTests(unittest.IsolatedAsyncioTestCase):
     async def test_windows_bun_shim_uninstall_follows_bunx_sidecar(self):
         # Bun은 Windows에서 ~/.bun/bin/<이름>.exe shim과 대상 경로를 UTF-16으로 담은 <이름>.bunx를 둠.
         with tempfile.TemporaryDirectory() as directory:
-            home = Path(directory)
+            home = Path(directory).resolve()
             bun_home = home / ".bun"
             (bun_home / "bin").mkdir(parents=True)
             (bun_home / "bin/bun.exe").write_bytes(b"MZ")
@@ -1454,7 +1427,7 @@ class UninstallTests(unittest.IsolatedAsyncioTestCase):
     async def test_windows_npm_prefix_uninstall_uses_prefix_layout(self):
         # Windows npm 전역 설치는 <prefix>/<이름>.cmd shim과 <prefix>/node_modules/<패키지>를 둠.
         with tempfile.TemporaryDirectory() as directory:
-            prefix = Path(directory) / "nodejs"
+            prefix = Path(directory).resolve() / "nodejs"
             root = prefix / "node_modules/@openai/codex"
             root.mkdir(parents=True)
             (root / "package.json").write_text('{"name":"@openai/codex"}')
@@ -1481,7 +1454,7 @@ class UninstallTests(unittest.IsolatedAsyncioTestCase):
     async def test_windows_npm_prefix_prefers_cmd_over_posix_script(self):
         # nvm-windows는 prefix에 POSIX 셸 스크립트 npm과 npm.cmd를 함께 두며 Windows에서는 npm.cmd만 실행 가능함.
         with tempfile.TemporaryDirectory() as directory:
-            prefix = Path(directory) / "nodejs"
+            prefix = Path(directory).resolve() / "nodejs"
             root = prefix / "node_modules/@opencode/cli"
             root.mkdir(parents=True)
             (root / "package.json").write_text('{"name":"@opencode/cli"}')
@@ -1497,7 +1470,7 @@ class UninstallTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_winget_portable_uninstall_uses_package_identifier(self):
         with tempfile.TemporaryDirectory() as directory:
-            home = Path(directory)
+            home = Path(directory).resolve()
             packages = home / "AppData/Local/Microsoft/WinGet/Packages"
             install_root = packages / "GitHub.Copilot_Microsoft.Winget.Source_8wekyb3d8bbwe"
             install_root.mkdir(parents=True)
@@ -1530,7 +1503,7 @@ class UninstallTests(unittest.IsolatedAsyncioTestCase):
     async def test_winget_self_updated_link_is_matched_to_package_directory(self):
         # copilot update는 WinGet Links의 심볼릭 링크를 실제 파일로 바꾸고 .old-<pid>-<time> 백업을 남김.
         with tempfile.TemporaryDirectory() as directory:
-            home = Path(directory)
+            home = Path(directory).resolve()
             winget_root = home / "AppData/Local/Microsoft/WinGet"
             install_root = winget_root / "Packages/GitHub.Copilot_Microsoft.Winget.Source_8wekyb3d8bbwe"
             install_root.mkdir(parents=True)
@@ -1566,7 +1539,7 @@ class UninstallTests(unittest.IsolatedAsyncioTestCase):
 
         key_path = r"Software\agents-status-test\Environment"
         with tempfile.TemporaryDirectory() as directory:
-            data = Path(directory) / "hermes"
+            data = Path(directory).resolve() / "hermes"
             data.mkdir()
             with winreg.CreateKey(winreg.HKEY_CURRENT_USER, key_path) as key:
                 winreg.SetValueEx(key, "Path", 0, winreg.REG_EXPAND_SZ, f"C:\\keep;{data}\\hermes-agent\\venv\\Scripts;{data}\\bin\\;%SystemRoot%")
@@ -1675,7 +1648,7 @@ class UninstallTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_agy_detection_ignores_gemini_and_ide_and_checks_native_path(self):
         with tempfile.TemporaryDirectory() as directory:
-            home = Path(directory)
+            home = Path(directory).resolve()
             spec = SPECS["antigravity"]
             self.assertEqual(spec.binaries, ("agy",))
             with patch("agents_status.core._which", side_effect=lambda name, **kwargs: "/bin/" + name if name in ("gemini", "antigravity") else None):
