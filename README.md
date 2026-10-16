@@ -11,8 +11,8 @@ Git·Python·uv 없이 설치 가능. 아래 명령은 버전 지정 없이 **�
 ```bash
 curl --fail --location --proto '=https' --proto-redir '=https' \
   https://github.com/workingdad365/agents-status-releases/releases/latest/download/install.sh \
-  -o install-agents-status.sh
-sh install-agents-status.sh
+  -o install-agents-status.sh &&
+sh install-agents-status.sh &&
 "$HOME/.local/bin/agents-status"
 ```
 
