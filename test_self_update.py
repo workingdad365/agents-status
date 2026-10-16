@@ -66,6 +66,10 @@ class UpdateTests(unittest.TestCase):
             archive.writestr("agents-status/" + update._executable_name(), b"new executable")
             archive.writestr("agents-status/_internal/data", b"bundled data")
             for name, content in extras:
+                if isinstance(name, str):
+                    raw_name = name
+                    name = zipfile.ZipInfo(raw_name)
+                    name.filename = name.orig_filename = raw_name
                 archive.writestr(name, content)
         return stream.getvalue()
 

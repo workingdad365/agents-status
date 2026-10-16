@@ -330,7 +330,8 @@ def _extract_archive(archive: Path, destination: Path) -> Path:
             if len(members) > MAX_MEMBERS:
                 raise UpdateError("배포 파일의 항목 수가 제한을 초과합니다.")
             for member in members:
-                name = member.filename
+                # Windows zipfile의 역슬래시 정규화 전 원본 이름을 검사함.
+                name = member.orig_filename
                 parts = PurePosixPath(name).parts
                 mode = member.external_attr >> 16
                 kind = stat.S_IFMT(mode)
