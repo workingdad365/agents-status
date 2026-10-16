@@ -141,18 +141,77 @@ uv run python -m unittest -v
 
 ## 릴리스 게시
 
-1. 공개 배포 저장소 `workingdad365/agents-status-releases`에만 **Contents: Read and write** 권한을 가진 fine-grained 토큰 발급.
-2. 비공개 소스 저장소의 Actions secret `RELEASE_TOKEN`으로 등록.
-3. `agents_status/__init__.py`의 `__version__`을 갱신하고 변경 사항을 커밋·푸시한 뒤, 해당 버전의 `v<버전>` 태그 푸시.
+### 최초 1회: 배포 권한 설정
+
+공개 배포 저장소 `workingdad365/agents-status-releases`에만 **Contents: Read and write** 권한을 가진 fine-grained 토큰을 발급하고, 비공개 소스 저장소에 등록함.
 
 ```bash
 gh secret set RELEASE_TOKEN --repo workingdad365/agents-status
 ```
 
-CI는 Windows x64, macOS x64·ARM64, Linux x64·ARM64에서 테스트와 실행 점검을 마친 뒤 공개 저장소에 배포함. 비공개 소스나 커밋 이력은 복사하지 않음.
+매 배포 시 재등록할 필요 없음. 토큰 만료·폐기·교체 시에만 다시 등록함. 토큰 값은 코드나 명령 인자에 기록하지 않음.
 
-태그 없이 빌드만 검증하려면 다음 명령 사용. 수동 실행은 릴리스를 게시하지 않음.
+### 매 릴리스: 버전 변경 → 검증 → 커밋 → 태그 게시
+
+아래 명령은 저장소 루트의 Bash 기준. `main`에서 배포할 변경 사항을 준비한 뒤 진행함.
+
+**1. 코드 버전 변경**
+
+`agents_status/__init__.py`의 `__version__`을 아직 사용하지 않은 새 버전으로 직접 변경함. `1.0.14` 이후 배포라면 `1.0.15` 등 다음 번호 사용.
+
+**태그만 만들어서는 앱 버전이 바뀌지 않음. 코드 버전과 태그가 다르면 CI가 배포를 중단함.**
+
+**2. 의존성 잠금 갱신 및 검증**
+
+```bash
+uv lock
+uv sync --locked
+VERSION=$(uv run --no-sync python -c 'from agents_status import __version__; print(__version__)')
+uv run --no-sync python packaging/build_release.py --check-tag "v$VERSION"
+uv run --no-sync python -m unittest discover -v
+uv run --no-sync agents-status --version
+uv run --no-sync agents-status --self-check
+```
+
+모든 명령이 성공하고 출력 버전이 의도한 배포 번호와 일치하는지 확인함. 실패하면 이후 단계를 진행하지 않음.
+
+**3. 배포할 변경 사항 커밋·푸시**
+
+```bash
+git add agents_status/__init__.py uv.lock
+git add -p
+git diff --cached
+git commit -m "release: v$VERSION"
+git push origin main
+```
+
+`git add -p`에서 이번 배포에 포함할 코드·문서 변경을 선택함. 새 파일이 있다면 파일 경로를 지정해 별도로 `git add`함. 커밋하지 않은 변경은 릴리스에 포함되지 않음.
+
+**4. 커밋된 코드 버전으로 태그 생성·푸시**
+
+```bash
+git diff --exit-code HEAD -- agents_status/__init__.py &&
+VERSION=$(uv run --no-sync python -c 'from agents_status import __version__; print(__version__)') &&
+git tag -a "v$VERSION" -m "agents-status $VERSION" &&
+git push origin "v$VERSION"
+```
+
+첫 명령으로 버전 파일에 미커밋 변경이 없는지 확인함. 명령을 `&&`로 연결하므로 확인·태그 생성이 실패하면 푸시하지 않음. 기존 태그를 강제로 덮어쓰지 않음. 새 터미널에서도 코드에서 버전을 읽으므로 태그 번호를 따로 입력할 필요 없음.
+
+**5. 배포 완료 확인**
+
+[소스 저장소의 Release Actions](https://github.com/workingdad365/agents-status/actions/workflows/release.yml)에서 해당 태그 실행의 `build` 5개와 `publish`가 모두 성공했는지 확인함. 태그 푸시 성공만으로 배포 완료를 판단하지 않음.
+
+```bash
+gh release view "v$VERSION" --repo workingdad365/agents-status-releases
+```
+
+공개 릴리스에 ZIP 5개, `install.sh`, `install.ps1`, `SHA256SUMS`가 있으며 초안이 아닌지 확인함. 마지막으로 이 문서의 버전 미지정 설치 명령으로 설치하고 `agents-status --version`이 새 버전인지 확인함. 비공개 소스나 커밋 이력은 공개 배포 저장소에 복사하지 않음.
+
+### 선택 사항: 태그 없이 CI 빌드 검증
 
 ```bash
 gh workflow run release.yml --repo workingdad365/agents-status --ref main
 ```
+
+수동 실행은 5개 플랫폼의 테스트·빌드만 수행하며 릴리스를 게시하지 않음. 태그 배포가 실패하면 Actions의 실패 원인을 먼저 수정함. 새 커밋을 올려도 기존 태그는 이동하지 않으므로, 코드 수정이 필요하면 새 버전으로 위 절차를 다시 진행함.
