@@ -51,12 +51,14 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\install-agents-status.ps1 
 
 | 환경 | 요구 사항 |
 |---|---|
-| Linux / WSL2 | x86_64: glibc 2.35 이상, ARM64: glibc 2.39 이상 |
+| Linux / WSL2 | x86_64·ARM64: glibc 2.28 이상(Rocky Linux 8·9 포함) |
 | macOS | Intel 또는 Apple Silicon |
 | Windows | x64, PowerShell 5.1 이상. ARM64는 x64 에뮬레이션 사용 |
 | Linux / macOS 설치 도구 | curl, unzip/zipinfo, sha256sum 또는 shasum |
 
 실행 패키지는 [공개 릴리스](https://github.com/workingdad365/agents-status-releases/releases)에서 다운로드 가능. 소스 저장소는 비공개이며, GitHub의 자동 생성 `Source code` 압축 파일에는 앱 소스가 포함되지 않음. OS 코드 서명·공증은 제공하지 않으므로 보안 정책에 따라 실행 허용이 필요할 수 있음.
+
+Linux 배포본은 GLIBC 2.28 기반 manylinux 컨테이너에서 생성하고, Rocky Linux 8·9에서 ZIP 추출 후 `--version`·`--self-check` 실행을 검증함. 기존 Ubuntu 기반 배포본의 `GLIBC_2.35`·`GLIBC_2.38` 오류는 호환 빌드가 반영된 릴리스 설치가 필요함.
 
 ## 조작
 
@@ -199,4 +201,3 @@ gh secret set RELEASE_TOKEN --repo workingdad365/agents-status
 - **CI 또는 게시 실패:** [Release Actions](https://github.com/workingdad365/agents-status/actions/workflows/release.yml)에서 해당 실행의 오류 확인. 권한 문제만 수정했다면 실패 작업을 재실행할 수 있음. 코드·테스트 수정이 필요하면 수정·커밋 후 `./release.sh`로 다음 버전을 배포함. 기존 실행을 재시도하면 같은 태그의 이전 코드를 사용하므로 새 수정 사항은 반영되지 않음.
 
 커밋 후 실패했을 때 무작정 스크립트를 다시 실행하면 버전이 한 번 더 증가하므로 기존 배포 상태를 먼저 확인함. 수동 태그 생성이나 버전 파일 수정은 일반 배포 절차에 필요 없음.
-

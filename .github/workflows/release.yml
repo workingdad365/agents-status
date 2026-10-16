@@ -37,14 +37,17 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        if: matrix.platform != 'linux'
         with:
           python-version: '3.13.9'
       - name: Install pinned build environment
+        if: matrix.platform != 'linux'
         run: |
           python -m pip install uv==0.9.2
           uv sync --locked --no-install-project --no-dev --python 3.13.9
           uv pip install --no-deps -r packaging/requirements-build.txt
       - name: Validate tag and tests
+        if: matrix.platform != 'linux'
         env:
           RELEASE_TAG: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
         shell: bash
@@ -54,7 +57,29 @@ jobs:
           fi
           uv run --no-sync python -m unittest discover -v
       - name: Build and smoke extracted artifact
+        if: matrix.platform != 'linux'
         run: uv run --no-sync python packaging/build_release.py
+      - name: Build Linux artifact on glibc 2.28
+        if: matrix.platform == 'linux'
+        env:
+          RELEASE_TAG: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
+          BUILD_ARCH: ${{ matrix.arch }}
+        run: |
+          docker run --rm -v "$PWD:/work" -w /work -e RELEASE_TAG \
+            "quay.io/pypa/manylinux_2_28_${BUILD_ARCH}" \
+            bash packaging/build_linux.sh
+      - name: Smoke Linux archive on Rocky Linux 8 and 9
+        if: matrix.platform == 'linux'
+        run: |
+          for version in 8 9; do
+            docker run --rm -v "$PWD/release:/release:ro" \
+              "rockylinux:$version" bash -ec '
+                dnf install -y unzip
+                unzip -q /release/agents-status-*.zip -d /tmp/smoke
+                /tmp/smoke/agents-status/agents-status --version
+                /tmp/smoke/agents-status/agents-status --self-check
+              '
+          done
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: release-${{ matrix.platform }}-${{ matrix.arch }}
