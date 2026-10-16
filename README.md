@@ -4,7 +4,7 @@
 
 ## 릴리스 설치
 
-사용자 설치에는 Git, Python, uv가 필요하지 않음. 소스 저장소는 비공개로 유지하며, 실행 패키지와 설치 스크립트는 [공개 배포 저장소](https://github.com/workingdad365/agents-status-releases/releases)에만 게시함. 최초 `v1.0.12` 릴리스 게시 후 아래 다운로드 주소 사용 가능.
+사용자 설치에는 Git, Python, uv가 필요하지 않음. 소스 저장소는 비공개로 유지하며, 실행 패키지와 설치 스크립트는 [공개 배포 저장소](https://github.com/workingdad365/agents-status-releases/releases)에만 게시함. `v1.0.12` 공개 릴리스부터 아래 다운로드 주소 사용 가능.
 
 | 환경 | 배포 대상 및 요구 사항 |
 |---|---|
@@ -240,6 +240,7 @@ uv run --no-sync python packaging/build_release.py
 - 새 버전 알림, 동의 후 업데이트·재시작, 시작 실패 복구 추가.
 - macOS 경로 별칭과 Windows 짧은 경로에서도 기존 설치를 식별하도록 경로 비교 보강.
 - Windows ZIP 경로 정규화 전 원본 이름 검사 및 네이티브 플랫폼 회귀 검증 추가.
+- Windows PowerShell 5.1 설치 스크립트의 중복 UTF-8 BOM 제거 및 공개 패키지 실제 설치 검증.
 
 ## 프로젝트 구성
 
