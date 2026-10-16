@@ -228,7 +228,7 @@ class AgentsStatusApp(App[None]):
     #actions { height: 1; padding: 0 1; }
     #actions Button { width: auto; min-width: 0; height: 1; border: none; padding: 0 1; margin-right: 1; }
     #action-status { height: 1; padding: 0 1; }
-    #instructions-source { width: 1fr; height: 1; color: $text-muted; }
+    #instructions-source { width: 100%; height: auto; padding: 0 1; content-align: left top; color: $text-muted; }
     #progress { display: none; width: 8; height: 1; }
     #activity { width: 1fr; height: 1; color: $text-muted; }
     RichLog { height: 9; border-top: solid $accent; padding: 0 1; }
@@ -266,13 +266,11 @@ class AgentsStatusApp(App[None]):
             yield Button("업데이트", id="update", variant="primary")
             yield Button("삭제", id="delete", variant="error")
             yield Button("지침 동기화", id="sync")
-            yield Button("전체 동기화", id="sync-all")
+            yield Button("지침 전체 동기화", id="sync-all")
+        yield Static(Text(f"공통 지침 위치: {self.instructions_source}", overflow="fold", no_wrap=False), id="instructions-source")
         with Horizontal(id="action-status"):
             yield LoadingIndicator(id="progress")
             yield Label("", id="activity")
-            source = Label(Text(f"원본: {self.instructions_source}"), id="instructions-source")
-            source.tooltip = str(self.instructions_source)
-            yield source
         yield SelectableRichLog(id="log", highlight=True, markup=True)
         yield Footer()
 
