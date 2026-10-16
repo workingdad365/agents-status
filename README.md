@@ -18,6 +18,22 @@ sh install-agents-status.sh &&
 
 ### Windows PowerShell
 
+#### PowerShell 7.x
+
+`&&`로 앞 단계가 성공했을 때만 다음 명령 실행.
+
+```powershell
+Invoke-WebRequest -UseBasicParsing -ErrorAction Stop `
+  https://github.com/workingdad365/agents-status-releases/releases/latest/download/install.ps1 `
+  -OutFile install-agents-status.ps1 &&
+powershell -NoProfile -ExecutionPolicy Bypass -File .\install-agents-status.ps1 &&
+& "$env:LOCALAPPDATA\agents-status\bin\agents-status.cmd"
+```
+
+#### Windows PowerShell 5.1
+
+`&&`를 지원하지 않으므로 스크립트 블록과 종료 코드 검사로 실패 시 중단.
+
 ```powershell
 & {
     Invoke-WebRequest -UseBasicParsing -ErrorAction Stop `
