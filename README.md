@@ -219,6 +219,8 @@ CI는 Python 3.13.9, uv 0.9.2, 고정 PyInstaller 빌드 도구와 `uv.lock`을 
 
 게시 실패로 초안이 남으면 공개 배포 저장소에서 해당 초안과 업로드 상태를 확인한 뒤 정리하고 publish 작업을 다시 실행함. 배포 토큰은 빌드 작업에 전달하지 않음.
 
+태그 확정 전 `gh workflow run release.yml --repo workingdad365/agents-status --ref main`으로 같은 플랫폼 검증을 실행할 수 있음. 수동 실행은 산출물만 생성하고 게시하지 않음. `RELEASE_TOKEN` 없이도 빌드 검증은 가능하지만 태그의 자동 게시 단계에는 토큰이 필요함.
+
 로컬 빌드:
 
 ```bash
@@ -236,6 +238,8 @@ uv run --no-sync python packaging/build_release.py
 - 비공개 소스와 공개 릴리스 배포 분리.
 - Python·uv가 필요 없는 설치 패키지 및 기존 설치 전환 추가.
 - 새 버전 알림, 동의 후 업데이트·재시작, 시작 실패 복구 추가.
+- macOS 경로 별칭과 Windows 짧은 경로에서도 기존 설치를 식별하도록 경로 비교 보강.
+- Windows ZIP 경로 정규화 전 원본 이름 검사 및 네이티브 플랫폼 회귀 검증 추가.
 
 ## 프로젝트 구성
 
