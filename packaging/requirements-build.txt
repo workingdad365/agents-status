@@ -1,0 +1,9 @@
+# 빌드 도구와 전이 의존성도 고정함. 런타임은 uv.lock 사용.
+pyinstaller==6.16.0
+pyinstaller-hooks-contrib==2025.9
+altgraph==0.17.4
+packaging==25.0
+setuptools==80.9.0
+macholib==1.16.3; sys_platform == 'darwin'
+pefile==2023.2.7; sys_platform == 'win32'
+pywin32-ctypes==0.2.3; sys_platform == 'win32'

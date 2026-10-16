@@ -1,4 +1,6 @@
 .*/
+!.github/
+!.github/**
 
 # npm 패키지(@charmland/crush) 설치 스크립트가 작업 디렉터리에 남기는 임시 디렉터리
 archive-*/
@@ -8,6 +10,7 @@ __pycache__/
 *.py[cod]
 build/
 dist/
+release/
 *.egg-info/
 
 # 테스트 커버리지 산출물

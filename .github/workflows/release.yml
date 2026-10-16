@@ -1,0 +1,93 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-22.04
+            platform: linux
+            arch: x86_64
+          - runner: ubuntu-24.04-arm
+            platform: linux
+            arch: aarch64
+          - runner: windows-2022
+            platform: windows
+            arch: x86_64
+          - runner: macos-15-intel
+            platform: macos
+            arch: x86_64
+          - runner: macos-14
+            platform: macos
+            arch: aarch64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: '3.13.9'
+      - name: Install pinned build environment
+        run: |
+          python -m pip install uv==0.9.2
+          uv sync --locked --no-install-project --no-dev --python 3.13.9
+          uv pip install --no-deps -r packaging/requirements-build.txt
+      - name: Validate tag and tests
+        env:
+          RELEASE_TAG: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
+        shell: bash
+        run: |
+          if [ -n "$RELEASE_TAG" ]; then
+            uv run --no-sync python packaging/build_release.py --check-tag "$RELEASE_TAG"
+          fi
+          uv run --no-sync python -m unittest discover -v
+      - name: Build and smoke extracted artifact
+        run: uv run --no-sync python packaging/build_release.py
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-${{ matrix.platform }}-${{ matrix.arch }}
+          path: release/*
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    needs: build
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: '3.13.9'
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: release-*
+          merge-multiple: true
+          path: release
+      - name: Verify complete release assets
+        run: python3 packaging/finalize_release.py
+      - name: Publish only complete release
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        shell: bash
+        run: |
+          test -n "$GH_TOKEN" || { echo 'RELEASE_TOKEN secret required'; exit 1; }
+          python3 packaging/prepare_distribution.py
+          gh release create "$RELEASE_TAG" --repo workingdad365/agents-status-releases --draft --title "agents-status $RELEASE_TAG" --notes "설치 파일과 SHA256SUMS. 소스 저장소는 비공개로 유지됩니다."
+          gh release upload "$RELEASE_TAG" --repo workingdad365/agents-status-releases release/*.zip release/SHA256SUMS install.sh install.ps1
+          gh release edit "$RELEASE_TAG" --repo workingdad365/agents-status-releases --draft=false --latest
