@@ -2,52 +2,72 @@
 
 여러 AI 코딩 에이전트의 설치 상태, 현재 버전, LLM 프로바이더를 한 화면에서 확인하고 개별 업데이트 및 글로벌 지침 동기화를 수행하는 Textual TUI임.
 
-## 요구 사항
+## 릴리스 설치
 
-- Python 3.13.x
-- [uv](https://docs.astral.sh/uv/)
-- Windows PowerShell 5.1 이상, Linux, WSL2 또는 macOS
+사용자 설치에는 Git, Python, uv가 필요하지 않음. 소스 저장소는 비공개로 유지하며, 실행 패키지와 설치 스크립트는 [공개 배포 저장소](https://github.com/workingdad365/agents-status-releases/releases)에만 게시함. 최초 `v1.0.12` 릴리스 게시 후 아래 다운로드 주소 사용 가능.
 
-Python 버전은 `.python-version`에 `3.13`으로 지정되어 있으며, 의존성은 `uv.lock`으로 고정됩니다.
-
-## 실행
+| 환경 | 배포 대상 및 요구 사항 |
+|---|---|
+| Linux / WSL2 | x86_64: glibc 2.35 이상, aarch64: glibc 2.39 이상 |
+| macOS | Intel x86_64, Apple Silicon aarch64 |
+| Windows | x64, PowerShell 5.1 이상. ARM64는 Windows의 x64 에뮬레이션 사용 |
+| POSIX 설치 도구 | curl, unzip/zipinfo, sha256sum 또는 shasum |
 
 Linux / WSL2 / macOS:
 
 ```bash
-./agents_status.sh
+curl --fail --location --proto '=https' --proto-redir '=https' \
+  https://github.com/workingdad365/agents-status-releases/releases/latest/download/install.sh \
+  -o install-agents-status.sh
+sh install-agents-status.sh
+"$HOME/.local/bin/agents-status" --version
+"$HOME/.local/bin/agents-status"
 ```
 
 Windows PowerShell:
 
 ```powershell
-.\agents_status.ps1
+Invoke-WebRequest -UseBasicParsing `
+  https://github.com/workingdad365/agents-status-releases/releases/latest/download/install.ps1 `
+  -OutFile install-agents-status.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File .\install-agents-status.ps1
+& "$env:LOCALAPPDATA\agents-status\bin\agents-status.cmd" --version
+& "$env:LOCALAPPDATA\agents-status\bin\agents-status.cmd"
 ```
 
-스크립트 실행 정책으로 차단되는 경우 다음 명령으로 실행함.
+설치 스크립트는 실행 전 내용 검토 가능. 특정 버전은 POSIX `--version 1.0.12`, Windows `-Version 1.0.12`로 지정함. 새 터미널에서 PATH 반영. PATH 자동 등록을 원하지 않으면 `--no-path` / `-NoPath` 사용. POSIX는 bash/zsh 설정을 등록하며 fish 등은 `~/.local/bin`을 직접 추가함.
 
-```powershell
-powershell -ExecutionPolicy Bypass -File .\agents_status.ps1
-```
+### 기존 소스·uv 설치에서 전환
 
-또는 직접 실행할 수 있습니다.
+기존 설치가 감지되면 기본적으로 덮어쓰지 않음. `uv tool install --editable .` 사용자는 `uv tool uninstall agents-status`로 도구를 먼저 제거한 뒤 위 설치 절차를 실행함. 소스 체크아웃과 에이전트 설정은 삭제하지 않음.
 
-```bash
-uv run agents-status
-```
+기존 실행기를 보존하며 명시적으로 전환하려면 `--migrate` / `-Migrate` 사용. POSIX는 기존 실행기를 설치 루트의 `legacy-launcher-*`로 보존함. 기존 uv 도구를 나중에 제거하면 같은 경로의 새 실행기까지 삭제될 수 있으므로 **uv 도구를 먼저 제거하는 절차 권장**. 소스용 `agents_status.sh` / `agents_status.ps1` 대신 설치된 `agents-status` 명령으로 실행해야 릴리스 버전을 사용함.
 
-첫 실행 시 uv가 Python 환경을 만들고 Textual을 설치합니다.
+프로젝트의 글로벌 지침 원본을 편집했다면 설치 디렉터리 밖에 보존하고 `agents-status --instructions /path/to/GLOBAL_INSTRUCTIONS.md`로 지정함. 번들 지침은 앱 릴리스와 함께 교체됨.
 
-### 전역 설치
+### 앱 자체 업데이트
 
-어느 디렉터리에서든 `agents-status` 명령으로 실행하려면 uv 도구로 설치한다. `--editable` 옵션을 주면 프로젝트 소스를 그대로 참조하므로 `git pull` 등으로 소스가 바뀌어도 재설치 없이 반영된다.
+- 관리형 릴리스 설치는 시작 시 백그라운드에서 안정 릴리스를 조회함. 조회 캐시는 6시간이며 버튼으로 수동 재확인 가능.
+- 새 버전 알림과 **앱 업데이트** 버튼은 기존 에이전트 업데이트(`U`)와 구분함.
+- 확인 창에서 버전·릴리스 노트 주소·재시작 안내를 표시하며, 승인 전에는 패키지를 설치하지 않음.
+- 승인 후 SHA256 검증, 안전한 압축 해제, 버전·한글 렌더링·번들 지침 점검을 거쳐 별도 버전 디렉터리에 설치함.
+- TUI 종료 뒤 활성 버전을 원자적으로 전환하고 기존 인자·작업 디렉터리로 재시작함. 새 TUI의 시작 확인에 실패하면 이전 선택자를 복구하고 기존 실행 파일을 다시 실행함.
+- 에이전트 작업 중에는 앱 업데이트를 시작하지 않음. 다운로드·검증 중에는 일반 종료 요청을 보류함.
+- 오프라인이나 GitHub 조회 실패는 에이전트 관리 기능을 막지 않음. 소스·uv 실행은 수동 조회와 전환 안내만 제공하며 자체 환경을 변경하지 않음.
 
-```bash
-uv tool install --editable .
-agents-status
-```
+업데이트는 공식 공개 저장소의 HTTPS 주소와 SHA256SUMS를 신뢰함. 별도 서명 키 검증이나 OS 코드 서명·공증을 제공하는 것은 아니며, OS 보안 정책에 따라 실행 허용 확인이 필요할 수 있음. 준비 완료 확인은 TUI 시작 시점까지의 검증이며 이후 모든 실행 오류에 대한 자동 복구는 아님.
 
-실행 파일은 `~/.local/bin`(Windows는 `%USERPROFILE%\.local\bin`)에 설치되며, PATH에 없으면 `uv tool update-shell`로 추가한다. 의존성이 바뀐 경우에는 `uv tool install --editable . --reinstall`로 다시 설치하고, 제거는 `uv tool uninstall agents-status`로 한다.
+강제 종료·전원 차단으로 잠금이 남으면 모든 agents-status 프로세스를 종료한 뒤 설치 루트의 `.update-lock`만 제거하고 재시도함. 기존 버전 디렉터리는 덮어쓰거나 자동 삭제하지 않음. 같은 세션에서 반복 업데이트하면 이전 실행 프로세스가 새 앱 종료까지 대기할 수 있음.
+
+### 설치 위치 및 제거
+
+| 환경 | 설치 루트 | 실행 진입점 |
+|---|---|---|
+| Linux / WSL2 | `~/.local/share/agents-status` | `~/.local/bin/agents-status` |
+| macOS | `~/Library/Application Support/agents-status` | `~/.local/bin/agents-status` |
+| Windows | `%LOCALAPPDATA%\agents-status` | 설치 루트의 `bin\agents-status.cmd` |
+
+제거는 앱 종료 후 해당 설치 루트와 실행 진입점만 삭제함. POSIX 셸 설정의 `# agents-status PATH`부터 `# agents-status PATH end`까지의 블록, Windows 사용자 PATH의 해당 `bin` 항목도 제거함. 공용 `~/.local/bin` 디렉터리 자체나 에이전트 설정 디렉터리는 삭제하지 않음.
 
 ## 조작
 
@@ -55,6 +75,7 @@ agents-status
 |---|---|
 | `↑` / `↓` | 에이전트 선택 |
 | `U` / 설치·업데이트 버튼 | `미설치`·`설정만`이면 설치, `설치됨`이면 업데이트 |
+| 앱 업데이트 확인 / 앱 업데이트 | agents-status 자체 새 버전 확인 및 승인 후 재시작 |
 | 삭제 버튼 | 프로그램 삭제 및 설정 삭제 여부 선택 |
 | 지침 동기화 버튼 | 선택한 에이전트에 글로벌 지침 반영 |
 | 전체 동기화 버튼 | 지원하는 모든 에이전트에 글로벌 지침 반영 |
@@ -158,12 +179,63 @@ Pi-Bolt는 [공식 저장소](https://github.com/opensec-git/Pi-Bolt)의 npm 패
 
 ## 개발 및 테스트
 
+개발용 소스 실행에는 Python 3.13.x와 [uv](https://docs.astral.sh/uv/)가 필요함. 런타임 의존성은 `uv.lock`으로 고정함.
+
+```bash
+./agents_status.sh
+# 또는 uv run agents-status
+```
+
+```powershell
+.\agents_status.ps1
+# 실행 정책으로 차단되면 powershell -ExecutionPolicy Bypass -File .\agents_status.ps1
+```
+
+개발용 전역 명령은 `uv tool install --editable .`로 설치 가능. 소스 변경은 즉시 반영되며 의존성 변경 시 `uv tool install --editable . --reinstall` 실행. 일반 사용자에게는 위 릴리스 설치 사용을 권장함.
+
 ```bash
 uv sync
 uv run python -m unittest -v
 ```
 
-테스트는 임시 홈 디렉터리에서 프로바이더 판별 규칙과 업데이트 명령 선택을 검증합니다.
+테스트는 임시 홈에서 에이전트 관리, 지침 동기화, 앱 업데이트 동의·무결성·복구 및 POSIX 설치를 검증함. 설치 테스트에는 unzip/zipinfo가 필요함.
+
+## 릴리스 게시
+
+버전 원천은 `agents_status/__init__.py`의 `__version__`이며 패키지 메타데이터, 화면, `--version`, 산출물 이름에서 동일 값을 사용함.
+
+1. 공개 배포 저장소 `workingdad365/agents-status-releases`만 대상으로 하는 fine-grained PAT를 생성함. Repository permissions의 **Contents: Read and write** 필요.
+2. 비공개 소스 저장소의 Actions secret `RELEASE_TOKEN`에 등록함. 일반 `GITHUB_TOKEN`은 다른 저장소에 게시할 수 없음. 토큰을 코드·설치 스크립트·릴리스에 포함하지 않음.
+3. 구현을 커밋·푸시한 뒤 `v1.0.12` 태그를 푸시하면 `.github/workflows/release.yml` 실행. 태그와 코드 버전이 다르면 게시 중단.
+
+```bash
+gh secret set RELEASE_TOKEN --repo workingdad365/agents-status
+# 커밋과 푸시 완료 후 실행
+git tag v1.0.12
+git push origin v1.0.12
+```
+
+CI는 Python 3.13.9, uv 0.9.2, 고정 PyInstaller 빌드 도구와 `uv.lock`을 사용함. 지원하는 5개 OS/CPU 조합에서 테스트·빌드·압축 해제 후 실행 점검이 모두 성공한 뒤에만 공개 릴리스를 게시함. 배포 저장소가 비어 있으면 고정 안내 README만 초기화하며 비공개 소스나 커밋 이력을 복사하지 않음. ZIP 5개, `install.sh`, `install.ps1`, `SHA256SUMS`를 초안에 모두 업로드한 후 공개로 전환함.
+
+게시 실패로 초안이 남으면 공개 배포 저장소에서 해당 초안과 업로드 상태를 확인한 뒤 정리하고 publish 작업을 다시 실행함. 배포 토큰은 빌드 작업에 전달하지 않음.
+
+로컬 빌드:
+
+```bash
+uv sync --locked --no-dev
+uv pip install --no-deps -r packaging/requirements-build.txt
+uv run --no-sync python packaging/build_release.py --check-tag v1.0.12
+uv run --no-sync python packaging/build_release.py
+```
+
+산출물은 `release/agents-status-1.0.12-<platform>-<arch>.zip`에 생성됨. 로컬 빌드의 OS 라이브러리 조건은 해당 빌드 환경을 따르므로 공식 지원 기준 산출물은 CI에서 생성함.
+
+### 1.0.12 변경
+
+- 패키지·화면·CLI 버전 통합.
+- 비공개 소스와 공개 릴리스 배포 분리.
+- Python·uv가 필요 없는 설치 패키지 및 기존 설치 전환 추가.
+- 새 버전 알림, 동의 후 업데이트·재시작, 시작 실패 복구 추가.
 
 ## 프로젝트 구성
 
@@ -172,10 +244,15 @@ uv run python -m unittest -v
 | `agents_status/app.py` | Textual 화면과 사용자 동작 |
 | `agents_status/core.py` | 상태·버전 조사와 업데이트 실행 |
 | `agents_status/instructions.py` | 에이전트별 글로벌 지침 복사 및 블록 병합 |
+| `agents_status/self_update.py` | 공개 릴리스 조회·검증·설치·재시작·복구 |
+| `install.sh`, `install.ps1` | 사용자 영역 릴리스 설치 및 전환 |
+| `packaging/` | 독립 실행형 패키징과 공개 배포 준비 |
+| `.github/workflows/release.yml` | 플랫폼별 검증 및 공개 배포 |
 | `GLOBAL_INSTRUCTIONS.md` | 동기화할 글로벌 지침 원본 |
 | `agents_status.sh` | uv 기반 실행 진입점 |
 | `agents_status.ps1` | Windows PowerShell용 uv 기반 실행 진입점 |
 | `test_agents_status.py` | 회귀 테스트 |
 | `test_instructions.py` | 지침 동기화 및 버튼 동작 테스트 |
+| `test_self_update.py`, `test_app_update.py`, `test_installers.py` | 자체 업데이트·동의·설치 회귀 테스트 |
 
 두 스크립트 모두 스크립트 위치의 프로젝트를 기준으로 동일한 Python TUI를 실행하며, 전달받은 인자와 종료 코드를 유지함.
