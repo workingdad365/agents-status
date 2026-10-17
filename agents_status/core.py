@@ -307,6 +307,23 @@ def _qwen(home: Path, env: Mapping[str, str]) -> str:
         return "unknown"
 
 
+def _qoder(home: Path, env: Mapping[str, str]) -> str:
+    text = _read(_agent_home(home, env, "qoder") / "settings.json")
+    if not text:
+        return "qoder"
+    try:
+        config = json.loads(text)
+        model = config.get("model", {}).get("name", "")
+        if not isinstance(model, str):
+            return "unknown"
+        # 선택한 모델의 첫 경로 요소가 제공자이며 뒤쪽 모델 제작사와 구분함.
+        if "/" in model:
+            return _model_provider(model) or "unknown"
+        return "qoder"
+    except (json.JSONDecodeError, AttributeError):
+        return "unknown"
+
+
 AGENTS: tuple[AgentSpec, ...] = (
     AgentSpec("claude", "Claude", ("claude",), ".claude", _claude, update_args=("update",)),
     AgentSpec("codex", "Codex CLI", ("codex",), ".codex", _codex),
@@ -326,7 +343,7 @@ AGENTS: tuple[AgentSpec, ...] = (
     AgentSpec("openclaw", "OpenClaw", ("openclaw",), ".openclaw", _openclaw, update_args=("update", "--yes")),
     AgentSpec("kimi", "Kimi Code", ("kimi",), ".kimi-code", _kimi, update_args=("upgrade", "--yes")),
     AgentSpec("qwen", "Qwen Code", ("qwen",), ".qwen", _qwen, update_args=("update",)),
-    AgentSpec("qoder", "Qoder CLI", ("qodercli",), ".qoder", _fixed("qoder"), update_args=("update",)),
+    AgentSpec("qoder", "Qoder CLI", ("qodercli",), ".qoder", _qoder, update_args=("update",)),
 )
 
 

@@ -77,8 +77,30 @@ class NewAgentTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(result.outcome, "copy")
                 self.assertEqual(result.destination.read_bytes(), source.read_bytes())
                 self.file(f"{key}/{filename}", b"invalid")
-                if key != "qoder":
-                    self.assertEqual(SPECS[key].provider_probe(self.home, env), "unknown")
+                self.assertEqual(SPECS[key].provider_probe(self.home, env), "unknown")
+
+    def test_qoder_provider_follows_selected_model_and_config_override(self):
+        self.file(".qoder/settings.json", b'{"model":{"name":"openai/other"}}')
+        root = self.home / "custom-qoder"
+        env = {"QODER_CONFIG_DIR": str(root), "PATH": ""}
+        cases = (
+            ({"model": {"name": "openrouter/pg/deepseek/deepseek-v4.1-flash"},
+              "security": {"auth": {"selectedType": "qoder-browser"}}}, "openrouter"),
+            ({"model": {"name": "anthropic/claude-sonnet"}}, "anthropic"),
+            ({"model": {"name": "auto", "preferences": {"openrouter/old": {}}}}, "qoder"),
+            ({"model": {"name": "efficient"}}, "qoder"),
+            ({}, "qoder"),
+            ({"model": {"name": "/model"}}, "unknown"),
+            ({"model": {"name": "openrouter/"}}, "unknown"),
+            ({"model": {"name": 123}}, "unknown"),
+            ({"model": None}, "unknown"),
+            ([], "unknown"),
+        )
+        for config, expected in cases:
+            with self.subTest(config=config):
+                self.file("custom-qoder/settings.json", json.dumps(config).encode())
+                status = scan_agent(SPECS["qoder"], home=self.home, env=env)
+                self.assertEqual(status.provider, expected)
 
     @unittest.skipUnless(os.name == "nt", "Windows PowerShell 설치 후 PATH 검증")
     def test_qoder_install_repairs_long_path_without_duplicates_or_failed_install_changes(self):

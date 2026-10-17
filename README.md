@@ -141,7 +141,7 @@ agents-status --instructions C:\path\to\GLOBAL_INSTRUCTIONS.md
 
 Hermes는 `HERMES_HOME`을 우선하며 Windows 기본 경로는 `%LOCALAPPDATA%\hermes`. Crush는 `CRUSH_GLOBAL_CONFIG`·`CRUSH_GLOBAL_DATA`와 XDG 경로 설정을 반영함.
 
-Kimi Code·Qwen Code·Qoder CLI는 공식 설치 스크립트를 사용하며 각각 `kimi upgrade --yes`, `qwen update`, `qodercli update`로 갱신함. npm/Bun/Homebrew 설치가 확인되면 해당 패키지 관리자로 갱신·삭제함. 설정과 지침 경로는 각각 `KIMI_CODE_HOME`, `QWEN_HOME`, `QODER_CONFIG_DIR`을 반영함. Qoder의 프로바이더 표시는 서비스 이름이며 개별 모델 제공사를 뜻하지 않음.
+Kimi Code·Qwen Code·Qoder CLI는 공식 설치 스크립트를 사용하며 각각 `kimi upgrade --yes`, `qwen update`, `qodercli update`로 갱신함. npm/Bun/Homebrew 설치가 확인되면 해당 패키지 관리자로 갱신·삭제함. 설정과 지침 경로는 각각 `KIMI_CODE_HOME`, `QWEN_HOME`, `QODER_CONFIG_DIR`을 반영함. Qoder의 프로바이더는 `settings.json`의 `model.name`에서 제공자 접두사를 읽으며, 기본 서비스 모델은 `qoder`로 표시함.
 
 블록 교체는 `GLOBAL_INSTRUCTIONS:BEGIN`과 `GLOBAL_INSTRUCTIONS:END` 마커 사이만 갱신하며 나머지 내용을 보존함. 원본 파일이 비어 있거나 읽을 수 없으면 동기화하지 않음.
 
