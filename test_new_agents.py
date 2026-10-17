@@ -1,6 +1,8 @@
 import json
 import os
 from pathlib import Path
+import shutil
+import subprocess
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -77,6 +79,38 @@ class NewAgentTests(unittest.IsolatedAsyncioTestCase):
                 self.file(f"{key}/{filename}", b"invalid")
                 if key != "qoder":
                     self.assertEqual(SPECS[key].provider_probe(self.home, env), "unknown")
+
+    @unittest.skipUnless(os.name == "nt", "Windows PowerShell 설치 후 PATH 검증")
+    def test_qoder_install_repairs_long_path_without_duplicates_or_failed_install_changes(self):
+        shell = shutil.which("pwsh") or shutil.which("powershell")
+        if not shell:
+            candidate = Path(r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe")
+            shell = str(candidate) if candidate.is_file() else None
+        if not shell:
+            self.skipTest("PowerShell이 없음")
+        self.file(".qoder/bin/qodercli/qodercli.exe", b"MZ")
+        self.file(".qoder/entry/qoder.cmd", b"@echo off")
+        with patch("agents_status.core._which", return_value=shell):
+            command, reason = install_command(self.status("qoder", None))
+        self.assertEqual(reason, "")
+        # 사용자 레지스트리 대신 자식 프로세스 PATH를 사용하고 공식 설치 응답을 대체함.
+        script = command.argv[-1].replace("'User'", "'Process'")
+        script = script.removesuffix("exit $LASTEXITCODE") + "Write-Output ('RESULT:' + $env:PATH); exit $LASTEXITCODE"
+        original = ";".join(str(self.home / ("existing" + str(i))) for i in range(100))
+        self.assertGreater(len(original), 2047)
+        expected = original + ";" + str(self.home / ".qoder/bin/qodercli") + ";" + str(self.home / ".qoder/entry")
+        for initial, code, result in ((original, 0, expected), (expected, 0, expected), (original, 7, None)):
+            with self.subTest(code=code, already_registered=initial == expected):
+                stub = f"function Invoke-RestMethod {{ '$global:LASTEXITCODE = {code}' }}; "
+                process = subprocess.run(
+                    (*command.argv[:-1], stub + script), capture_output=True, text=True, errors="replace", timeout=30,
+                    env={"USERPROFILE": str(self.home), "PATH": initial, "SystemRoot": r"C:\Windows"},
+                )
+                self.assertEqual(process.returncode, code, process.stderr)
+                if result is None:
+                    self.assertNotIn("RESULT:", process.stdout)
+                else:
+                    self.assertIn("RESULT:" + result, process.stdout)
 
     def test_install_location_scan_without_path(self):
         for platform in ("linux", "win32"):

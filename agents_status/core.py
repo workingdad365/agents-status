@@ -716,7 +716,29 @@ def install_command(status: AgentStatus) -> tuple[UpdateCommand | None, str]:
             if not shell:
                 return None, f"{status.spec.name} 설치에는 PowerShell이 필요합니다."
             script = ("$ErrorActionPreference = 'Stop'; $global:LASTEXITCODE = 0; "
-                      f"& ([scriptblock]::Create((irm {windows}))); exit $LASTEXITCODE")
+                      f"& ([scriptblock]::Create((irm {windows}))); ")
+            if status.spec.key == "qoder":
+                # 공식 설치기의 2047자 제한으로 누락된 PATH를 .NET API로 보완함.
+                script += (
+                    "if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }; "
+                    "$userPath = [Environment]::GetEnvironmentVariable('Path', 'User'); "
+                    "$updatedPath = $userPath; "
+                    "foreach ($relative in @('.qoder\\bin\\qodercli\\qodercli.exe', '.qoder\\entry\\qoder.cmd')) { "
+                    "$file = Join-Path $env:USERPROFILE $relative; "
+                    "if (Test-Path -LiteralPath $file -PathType Leaf) { "
+                    "$directory = Split-Path -Parent $file; "
+                    "$entries = @($updatedPath -split ';' | ForEach-Object { "
+                    "[Environment]::ExpandEnvironmentVariables($_).Trim().TrimEnd('\\') }); "
+                    "if ($entries -notcontains $directory.TrimEnd('\\')) { "
+                    "$updatedPath = if ([string]::IsNullOrEmpty($updatedPath)) { $directory } "
+                    "else { $updatedPath.TrimEnd(';') + ';' + $directory } "
+                    "} } }; "
+                    "if ($updatedPath -ne $userPath) { "
+                    "[Environment]::SetEnvironmentVariable('Path', $updatedPath, 'User'); "
+                    "Write-Output 'Qoder PATH registered. Restart your terminal to use qoder/qodercli.' "
+                    "}; "
+                )
+            script += "exit $LASTEXITCODE"
             return UpdateCommand((shell, "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script), script), ""
         if not _which("curl") or not (bash := _which("bash")):
             return None, f"{status.spec.name} 설치에는 curl과 bash가 필요합니다."
