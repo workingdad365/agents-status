@@ -220,8 +220,16 @@ def _pi(home: Path, env: Mapping[str, str]) -> str:
 
 
 def _crush(home: Path, env: Mapping[str, str]) -> str:
-    data_home = Path(env.get("XDG_DATA_HOME", home / ".local/share"))
-    text = _read(data_home / "crush/crush.json").replace("\n", "")
+    if custom := env.get("CRUSH_GLOBAL_DATA"):
+        data_root = Path(custom)
+    elif xdg := env.get("XDG_DATA_HOME"):
+        data_root = Path(xdg) / "crush"
+    elif sys.platform == "win32":
+        profile = Path(env.get("USERPROFILE") or home)
+        data_root = Path(env.get("LOCALAPPDATA") or profile / "AppData/Local") / "crush"
+    else:
+        data_root = home / ".local/share/crush"
+    text = _read(data_root / "crush.json").replace("\n", "")
     large = re.search(r'"large"\s*:\s*\{[^}]*\}', text)
     provider = re.search(r'"provider"\s*:\s*"([^"]*)"', large.group(0)) if large else None
     return provider.group(1) if provider else "unknown"

@@ -33,6 +33,36 @@ def symlink_or_skip(link: Path, target: Path) -> None:
 
 
 class ProviderTests(unittest.TestCase):
+    def test_crush_provider_data_paths_and_precedence(self):
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            for relative, provider in (
+                (".local/share/crush", "unix"),
+                ("AppData/Local/crush", "openrouter"),
+                ("profile/AppData/Local/crush", "profile"),
+                ("local/crush", "local"),
+                ("xdg/crush", "xdg"),
+                ("custom", "custom"),
+            ):
+                root = home / relative
+                root.mkdir(parents=True)
+                (root / "crush.json").write_text(json.dumps({"models": {"large": {"provider": provider}}}), encoding="utf-8")
+            cases = (
+                ("linux", {}, "unix"),
+                ("darwin", {}, "unix"),
+                ("win32", {}, "openrouter"),
+                ("win32", {"LOCALAPPDATA": "", "XDG_DATA_HOME": "", "CRUSH_GLOBAL_DATA": ""}, "openrouter"),
+                ("win32", {"USERPROFILE": str(home / "profile")}, "profile"),
+                ("win32", {"LOCALAPPDATA": str(home / "local")}, "local"),
+                ("win32", {"LOCALAPPDATA": str(home / "local"), "XDG_DATA_HOME": str(home / "xdg")}, "xdg"),
+                ("win32", {"XDG_DATA_HOME": str(home / "xdg"), "CRUSH_GLOBAL_DATA": str(home / "custom")}, "custom"),
+                ("linux", {"CRUSH_GLOBAL_DATA": str(home / "custom")}, "custom"),
+                ("win32", {"CRUSH_GLOBAL_DATA": str(home / "missing")}, "unknown"),
+            )
+            for platform, env, expected in cases:
+                with self.subTest(platform=platform, env=env), patch("agents_status.core.sys.platform", platform):
+                    self.assertEqual(SPECS["crush"].provider_probe(home, env), expected)
+
     def status(self, key, files, extra_env=None):
         with tempfile.TemporaryDirectory() as directory:
             home = Path(directory).resolve()
