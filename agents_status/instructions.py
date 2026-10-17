@@ -27,6 +27,9 @@ DESTINATIONS = {
     "crush": "CRUSH.md",
     "hermes": "SOUL.md",
     "openclaw": "workspace/AGENTS.md",
+    "kimi": "AGENTS.md",
+    "qwen": "QWEN.md",
+    "qoder": "AGENTS.md",
 }
 
 

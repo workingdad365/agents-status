@@ -99,7 +99,7 @@ Linux 배포본은 GLIBC 2.28 기반 manylinux 컨테이너에서 생성하고, 
 
 ## 지원 에이전트
 
-Claude, Codex CLI, Command Code, Copilot CLI, OpenCode, Kilo, OMP, Pi, Pi-Bolt, Antigravity, Crush, Hermes, OpenClaw 지원.
+Claude, Codex CLI, Command Code, Copilot CLI, OpenCode, Kilo, OMP, Pi, Pi-Bolt, Antigravity, Crush, Hermes, OpenClaw, Kimi Code, Qwen Code, Qoder CLI 지원.
 
 에이전트별 공식 설치·업데이트 명령 또는 기존 패키지 관리자를 사용함. 설치 방식을 판별할 수 없으면 자동 변경 대신 사유를 표시함. 에이전트에 따라 npm 등 별도의 실행·설치 도구가 필요할 수 있음.
 
@@ -133,8 +133,13 @@ agents-status --instructions C:\path\to\GLOBAL_INSTRUCTIONS.md
 | Crush | `~/.config/crush/CRUSH.md` | 덮어쓰기 |
 | Hermes | `~/.hermes/SOUL.md` | 지침 블록만 교체 |
 | OpenClaw | `~/.openclaw/workspace/AGENTS.md` | 지침 블록만 교체 |
+| Kimi Code | `~/.kimi-code/AGENTS.md` | 덮어쓰기 |
+| Qwen Code | `~/.qwen/QWEN.md` | 덮어쓰기 |
+| Qoder CLI | `~/.qoder/AGENTS.md` | 덮어쓰기 |
 
 Hermes는 `HERMES_HOME`을 우선하며 Windows 기본 경로는 `%LOCALAPPDATA%\hermes`. Crush는 `CRUSH_GLOBAL_CONFIG`·`CRUSH_GLOBAL_DATA`와 XDG 경로 설정을 반영함.
+
+Kimi Code·Qwen Code·Qoder CLI는 공식 설치 스크립트를 사용하며 각각 `kimi upgrade --yes`, `qwen update`, `qodercli update`로 갱신함. npm/Bun/Homebrew 설치가 확인되면 해당 패키지 관리자로 갱신·삭제함. 설정과 지침 경로는 각각 `KIMI_CODE_HOME`, `QWEN_HOME`, `QODER_CONFIG_DIR`을 반영함. Qoder의 프로바이더 표시는 서비스 이름이며 개별 모델 제공사를 뜻하지 않음.
 
 블록 교체는 `GLOBAL_INSTRUCTIONS:BEGIN`과 `GLOBAL_INSTRUCTIONS:END` 마커 사이만 갱신하며 나머지 내용을 보존함. 원본 파일이 비어 있거나 읽을 수 없으면 동기화하지 않음.
 

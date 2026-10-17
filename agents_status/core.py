@@ -9,12 +9,14 @@ import os
 import platform
 from pathlib import Path, PureWindowsPath
 import re
+import shlex
 import shutil
 import signal
 import stat
 import subprocess
 import sys
 import tempfile
+import tomllib
 from typing import Callable, Mapping, Sequence
 
 
@@ -266,6 +268,37 @@ def _openclaw(home: Path, env: Mapping[str, str]) -> str:
     return _provider_of(reference) or "unknown"
 
 
+def _agent_home(home: Path, env: Mapping[str, str], key: str) -> Path:
+    variable, default = {
+        "kimi": ("KIMI_CODE_HOME", ".kimi-code"),
+        "qwen": ("QWEN_HOME", ".qwen"),
+        "qoder": ("QODER_CONFIG_DIR", ".qoder"),
+    }[key]
+    value = env.get(variable) or str(home / default)
+    if value == "~" or value.startswith("~/"):
+        return home / value[2:] if value != "~" else home
+    return Path(value)
+
+
+def _kimi(home: Path, env: Mapping[str, str]) -> str:
+    try:
+        config = tomllib.loads(_read(_agent_home(home, env, "kimi") / "config.toml"))
+        model = config.get("models", {}).get(config.get("default_model", ""), {})
+        provider = model.get("provider")
+        return provider if isinstance(provider, str) and provider else "unknown"
+    except (tomllib.TOMLDecodeError, AttributeError, TypeError):
+        return "unknown"
+
+
+def _qwen(home: Path, env: Mapping[str, str]) -> str:
+    try:
+        config = json.loads(_read(_agent_home(home, env, "qwen") / "settings.json"))
+        provider = config.get("security", {}).get("auth", {}).get("selectedType")
+        return provider if isinstance(provider, str) and provider else "unknown"
+    except (json.JSONDecodeError, AttributeError):
+        return "unknown"
+
+
 AGENTS: tuple[AgentSpec, ...] = (
     AgentSpec("claude", "Claude", ("claude",), ".claude", _claude, update_args=("update",)),
     AgentSpec("codex", "Codex CLI", ("codex",), ".codex", _codex),
@@ -283,6 +316,9 @@ AGENTS: tuple[AgentSpec, ...] = (
     AgentSpec("crush", "Crush", ("crush",), ".config/crush", _crush),
     AgentSpec("hermes", "Hermes", ("hermes",), ".hermes", _hermes, update_args=("update", "--yes")),
     AgentSpec("openclaw", "OpenClaw", ("openclaw",), ".openclaw", _openclaw, update_args=("update", "--yes")),
+    AgentSpec("kimi", "Kimi Code", ("kimi",), ".kimi-code", _kimi, update_args=("upgrade", "--yes")),
+    AgentSpec("qwen", "Qwen Code", ("qwen",), ".qwen", _qwen, update_args=("update",)),
+    AgentSpec("qoder", "Qoder CLI", ("qodercli",), ".qoder", _fixed("qoder"), update_args=("update",)),
 )
 
 
@@ -296,6 +332,8 @@ def _scratch_directory() -> tempfile.TemporaryDirectory[str]:
 
 
 def _config_root(spec: AgentSpec, home: Path, env: Mapping[str, str] | None = None) -> Path:
+    if spec.key in ("kimi", "qwen", "qoder"):
+        return _agent_home(home, os.environ if env is None else env, spec.key)
     if spec.key == "hermes":
         return _hermes_home(home, env)
     return home / spec.config_root
@@ -378,6 +416,21 @@ def scan_agent(
             break
     executable = Path(found) if found else None
     config_root = _config_root(spec, base, environment)
+    if executable is None and spec.key in ("kimi", "qwen", "qoder"):
+        suffix = ".exe" if sys.platform == "win32" else ""
+        if spec.key == "kimi":
+            directory = Path(environment.get("KIMI_INSTALL_DIR") or str(base / ".kimi-code")) / "bin"
+            candidates = (directory / f"kimi{suffix}",)
+        elif spec.key == "qwen":
+            default = (Path(environment.get("LOCALAPPDATA", str(base / "AppData/Local"))) / "qwen-code"
+                       if sys.platform == "win32" else base / ".local")
+            root = Path(environment.get("QWEN_INSTALL_ROOT") or str(default))
+            directory = Path(environment.get("QWEN_INSTALL_BIN_DIR") or str(root / "bin"))
+            candidates = (directory / ("qwen.cmd" if sys.platform == "win32" else "qwen"),)
+        else:
+            candidates = (base / ".local/bin" / f"qodercli{suffix}",)
+        executable = next((item for item in candidates if item.is_file()
+                           and (sys.platform == "win32" or os.access(item, os.X_OK))), None)
     if executable is None and sys.platform == "win32":
         # 설치 자식 프로세스가 등록한 PATH는 부모 터미널을 통해 재실행해도 오래된 값일 수 있음.
         # Hermes는 최신 설치의 bin 런처와 구버전 venv 진입점을, OMP는 공식 설치 위치를 직접 확인함.
@@ -555,6 +608,9 @@ PACKAGES = {
     "pi-bolt": "pi-bolt",
     "crush": "@charmland/crush",
     "openclaw": "openclaw",
+    "kimi": "@moonshot-ai/kimi-code",
+    "qwen": "@qwen-code/qwen-code",
+    "qoder": "@qoder-ai/qodercli",
 }
 
 # npm 패키지 이름이 바뀐 도구는 두 이름 모두 삭제 판별 대상으로 삼음.
@@ -637,6 +693,24 @@ def _codex_packages(home: Path | None = None) -> Path:
 
 
 def install_command(status: AgentStatus) -> tuple[UpdateCommand | None, str]:
+    if status.spec.key in ("kimi", "qwen", "qoder"):
+        unix, windows = {
+            "kimi": ("https://code.kimi.com/kimi-code/install.sh", "https://code.kimi.com/kimi-code/install.ps1"),
+            "qwen": ("https://qwen-code-assets.oss-cn-hangzhou.aliyuncs.com/installation/install-qwen-standalone.sh",
+                     "https://qwen-code-assets.oss-cn-hangzhou.aliyuncs.com/installation/install-qwen-standalone.ps1"),
+            "qoder": ("https://qoder.com/install", "https://qoder.com/install.ps1"),
+        }[status.spec.key]
+        if sys.platform == "win32":
+            shell = _which("pwsh") or _which("powershell")
+            if not shell:
+                return None, f"{status.spec.name} 설치에는 PowerShell이 필요합니다."
+            script = ("$ErrorActionPreference = 'Stop'; $global:LASTEXITCODE = 0; "
+                      f"& ([scriptblock]::Create((irm {windows}))); exit $LASTEXITCODE")
+            return UpdateCommand((shell, "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script), script), ""
+        if not _which("curl") or not (bash := _which("bash")):
+            return None, f"{status.spec.name} 설치에는 curl과 bash가 필요합니다."
+        script = f"curl -fsSL {unix} | bash"
+        return UpdateCommand((bash, "-o", "pipefail", "-c", script), script), ""
     if status.spec.key == "antigravity":
         if sys.platform == "win32":
             shell = _which("pwsh") or _which("powershell")
@@ -740,6 +814,24 @@ def uninstall_plan(status: AgentStatus, *, home: Path | None = None) -> tuple[Un
         return plan, ""
     if reason:
         return None, reason
+    if status.spec.key == "qwen" and (root := _qwen_standalone(executable)):
+        paths = (root,) if location.is_relative_to(root.resolve()) else (executable, root)
+        return UninstallPlan(paths=paths), ""
+    if status.spec.key == "kimi" and executable.stem.lower() == "kimi":
+        if "node_modules" not in resolved.parts and _is_native_binary(resolved, _PE_MAGIC + _UNIX_MAGIC):
+            backup = executable.with_name(executable.name + ".bak")
+            paths = (executable, backup) if backup.is_file() else (executable,)
+            return UninstallPlan(paths=paths), ""
+    if status.spec.key == "qoder":
+        root = base / ".qoder/bin/qodercli"
+        if (resolved.parent == root.resolve() and resolved.name.startswith("qodercli-")
+                and _is_native_binary(resolved, _PE_MAGIC + _UNIX_MAGIC)):
+            links = (executable,) if not location.is_relative_to(root.resolve()) else ()
+            return UninstallPlan(paths=(*links, root)), ""
+        if (executable.stem.lower() == "qodercli" and not executable.is_symlink()
+                and "node_modules" not in resolved.parts
+                and _is_native_binary(resolved, _PE_MAGIC + _UNIX_MAGIC)):
+            return UninstallPlan(paths=(executable,)), ""
     if status.spec.key == "claude":
         root = base / ".local/share/claude"
         # Windows 네이티브 설치는 Unix의 심볼릭 링크 대신 bin에 PE 실행 파일을 둠.
@@ -861,6 +953,31 @@ def uninstall_plan(status: AgentStatus, *, home: Path | None = None) -> tuple[Un
         if _is_native_binary(executable, _UNIX_MAGIC):
             return UninstallPlan(paths=(executable,)), ""
     return None, f"{status.spec.name} 설치 경로({resolved})에서 지원하는 삭제 방식(npm/Bun/Homebrew/독립 바이너리)을 판별하지 못했습니다."
+
+
+def _qwen_standalone(executable: Path) -> Path | None:
+    """공식 standalone manifest와 번들 런타임을 확인하여 런처의 설치 루트를 판별함."""
+    target = executable.resolve()
+    if not _is_native_binary(target, _PE_MAGIC + _UNIX_MAGIC):
+        text = _read(target)
+        match = re.search(r'^exec\s+(.+)\s+"\$@"\s*$', text, re.MULTILINE)
+        windows = re.search(r'^call\s+"([^"]+\\bin\\qwen\.cmd)"\s+%\*', text, re.MULTILINE | re.IGNORECASE)
+        if match:
+            try:
+                parts = shlex.split(match.group(1))
+                if len(parts) == 1:
+                    target = Path(parts[0])
+            except ValueError:
+                return None
+        elif windows:
+            target = Path(windows.group(1))
+    root = target.parent.parent
+    if (target.parent.name == "bin" and target.name in ("qwen", "qwen.cmd")
+            and _json_string(root / "manifest.json", "name") == "@qwen-code/qwen-code"
+            and _json_string(root / "manifest.json", "runtime") == "node"
+            and (root / ("node/node.exe" if target.suffix == ".cmd" else "node/bin/node")).is_file()):
+        return root
+    return None
 
 
 def _pi_managed_install(executable: Path, resolved: Path) -> tuple[Path, Path | None] | None:
@@ -1026,6 +1143,10 @@ def update_command(status: AgentStatus, *, home: Path | None = None) -> tuple[Up
     if not status.executable:
         return None, "실행 파일이 없어 업데이트할 수 없습니다."
     spec = status.spec
+    if spec.key in ("kimi", "qwen", "qoder"):
+        command = _package_update(status.executable, _package_names(spec.key))
+        if command:
+            return command, ""
     if spec.key in ("claude", "opencode", "pi-bolt"):
         names = _package_names(spec.key)
         command = _package_update(status.executable, names)
