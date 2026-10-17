@@ -132,6 +132,29 @@ class NewAgentTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(reason, "")
         self.assertEqual(plan.paths, (binary,))
 
+    async def test_windows_qoder_without_path_detects_install_and_removes_versions(self):
+        binary = self.file(".qoder/bin/qodercli/qodercli.exe", b"MZ\x00\x00")
+        version = self.file(".qoder/bin/qodercli/qodercli-1.1.73.exe", b"MZ\x00\x00")
+        settings = self.file(".qoder/settings.json", b"{}")
+        other = self.file(".qoder/bin/other.exe", b"MZ\x00\x00")
+        with patch("agents_status.core.sys.platform", "win32"), patch("agents_status.core._which", return_value=None), patch("agents_status.core._version", return_value="1.1.73"):
+            status = scan_agent(SPECS["qoder"], home=self.home, env={"PATH": ""})
+            self.assertEqual(status.status, StatusKind.INSTALLED)
+            self.assertEqual(status.executable, binary)
+            self.assertEqual(status.version, "1.1.73")
+            command, reason = update_command(status)
+            self.assertEqual(reason, "")
+            self.assertEqual(command.argv, (str(binary), "update"))
+            plan, reason = uninstall_plan(status, home=self.home)
+            self.assertEqual(reason, "")
+            self.assertEqual(plan.paths, (binary.parent,))
+            self.assertEqual((await run_uninstall(plan)).returncode, 0)
+            self.assertEqual(scan_agent(SPECS["qoder"], home=self.home, env={"PATH": ""}).status, StatusKind.CONFIG_ONLY)
+        self.assertFalse(binary.exists())
+        self.assertFalse(version.exists())
+        self.assertEqual(settings.read_bytes(), b"{}")
+        self.assertTrue(other.exists())
+
     def test_npm_install_uses_original_prefix_for_update_and_uninstall(self):
         for key, package in (("kimi", "@moonshot-ai/kimi-code"), ("qwen", "@qwen-code/qwen-code"), ("qoder", "@qoder-ai/qodercli")):
             prefix = self.home / key

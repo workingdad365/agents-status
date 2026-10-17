@@ -429,6 +429,9 @@ def scan_agent(
             candidates = (directory / ("qwen.cmd" if sys.platform == "win32" else "qwen"),)
         else:
             candidates = (base / ".local/bin" / f"qodercli{suffix}",)
+            if sys.platform == "win32":
+                # 공식 설치기가 PATH 등록에 실패해도 고정 진입점으로 설치를 확인함.
+                candidates += (base / ".qoder/bin/qodercli/qodercli.exe",)
         executable = next((item for item in candidates if item.is_file()
                            and (sys.platform == "win32" or os.access(item, os.X_OK))), None)
     if executable is None and sys.platform == "win32":
@@ -824,7 +827,8 @@ def uninstall_plan(status: AgentStatus, *, home: Path | None = None) -> tuple[Un
             return UninstallPlan(paths=paths), ""
     if status.spec.key == "qoder":
         root = base / ".qoder/bin/qodercli"
-        if (resolved.parent == root.resolve() and resolved.name.startswith("qodercli-")
+        if (resolved.parent == root.resolve()
+                and (resolved.name.startswith("qodercli-") or resolved.name == "qodercli.exe")
                 and _is_native_binary(resolved, _PE_MAGIC + _UNIX_MAGIC)):
             links = (executable,) if not location.is_relative_to(root.resolve()) else ()
             return UninstallPlan(paths=(*links, root)), ""
