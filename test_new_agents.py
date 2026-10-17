@@ -148,7 +148,8 @@ class NewAgentTests(unittest.IsolatedAsyncioTestCase):
             plan, reason = uninstall_plan(status, home=self.home)
             self.assertEqual(reason, "")
             self.assertEqual(plan.paths, (binary.parent,))
-            self.assertEqual((await run_uninstall(plan)).returncode, 0)
+            with patch("agents_status.core._clean_user_environment", return_value=[]):
+                self.assertEqual((await run_uninstall(plan)).returncode, 0)
             self.assertEqual(scan_agent(SPECS["qoder"], home=self.home, env={"PATH": ""}).status, StatusKind.CONFIG_ONLY)
         self.assertFalse(binary.exists())
         self.assertFalse(version.exists())
