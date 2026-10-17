@@ -615,9 +615,12 @@ class AppTests(unittest.IsolatedAsyncioTestCase):
             app = AgentsStatusApp()
             async with app.run_test() as pilot:
                 await pilot.pause()
+                table = app.query_one(DataTable)
+                table.move_cursor(row=table.get_row_index("pi"))
+                await pilot.pause()
                 self.assertEqual(str(app.query_one("#update", Button).label), "업데이트")
                 for row in (1, 2):
-                    app.query_one(DataTable).move_cursor(row=row)
+                    table.move_cursor(row=table.get_row_index("codex" if row == 1 else "claude"))
                     await pilot.pause()
                     self.assertEqual(str(app.query_one("#update", Button).label), "설치")
                     self.assertEqual(app.query_one("#delete", Button).disabled, row == 2)

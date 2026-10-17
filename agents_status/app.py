@@ -4,7 +4,9 @@ import argparse
 import asyncio
 from pathlib import Path
 import platform
+import subprocess
 import sys
+import webbrowser
 
 from rich.cells import get_character_cell_size
 from rich.text import Text
@@ -12,12 +14,15 @@ from textual import events, on, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
+from textual.message import Message
 from textual.screen import ModalScreen
 from textual.selection import Selection
 from textual.strip import Strip
+from textual.widget import Widget
 from textual.widgets import Button, DataTable, Footer, Header, Label, LoadingIndicator, RichLog, Static
 
 from . import __version__
+from .browser import RELEASE_PAGES, open_release_page
 from .self_update import (
     PreparedUpdate, Release, UpdateError, acknowledge_startup, apply_update,
     check_for_update, discard_prepared_update, installation_root, prepare_update,
@@ -37,6 +42,22 @@ def _cell_to_index(text: str, cell: int) -> int:
             return index
         width += get_character_cell_size(character)
     return len(text)
+
+
+class AgentTable(DataTable):
+    ALLOW_SELECT = False
+
+    class OpenRelease(Message):
+        def __init__(self, key: str) -> None:
+            super().__init__()
+            self.key = key
+
+    async def _on_click(self, event: events.Click) -> None:
+        await super()._on_click(event)
+        row = event.style.meta.get("row", -1)
+        column = event.style.meta.get("column", -1)
+        if event.button == 1 and event.chain == 2 and 0 <= row < self.row_count and column >= 0:
+            self.post_message(self.OpenRelease(str(self.ordered_rows[row].key.value)))
 
 
 class SelectableRichLog(RichLog):
@@ -260,7 +281,7 @@ class AgentsStatusApp(App[None]):
         with Horizontal(id="self-update-bar"):
             yield Label("", id="self-update-status")
             yield Button("앱 업데이트 확인", id="self-update")
-        yield DataTable(id="agents", cursor_type="row", zebra_stripes=True)
+        yield AgentTable(id="agents", cursor_type="row", zebra_stripes=True)
         with Horizontal(id="actions"):
             yield Button("새로고침", id="refresh", variant="default")
             yield Button("업데이트", id="update", variant="primary")
@@ -275,6 +296,8 @@ class AgentsStatusApp(App[None]):
         yield Footer()
 
     def on_mount(self) -> None:
+        for widget in self.screen.walk_children(Widget):
+            widget.ALLOW_SELECT = isinstance(widget, SelectableRichLog)
         table = self.query_one(DataTable)
         table.add_columns("상태", "에이전트", "버전", "프로바이더", "실행 파일")
         acknowledge_startup()
@@ -285,10 +308,23 @@ class AgentsStatusApp(App[None]):
     @on(events.TextSelected)
     def copy_selection(self) -> None:
         # 마우스 버튼을 놓으면 드래그로 선택한 텍스트를 OSC 52로 터미널 클립보드에 복사함.
-        text = self.screen.get_selected_text()
+        log = self.query_one("#log", SelectableRichLog)
+        selection = log.text_selection
+        text = log.get_selection(selection)[0] if selection is not None else ""
         if text:
             self.copy_to_clipboard(text)
             self.notify("선택한 텍스트를 클립보드에 복사했습니다.", timeout=2)
+
+    @on(AgentTable.OpenRelease)
+    def release_requested(self, event: AgentTable.OpenRelease) -> None:
+        self.open_agent_release(event.key)
+
+    @work(group="browser", exclusive=True)
+    async def open_agent_release(self, key: str) -> None:
+        try:
+            await asyncio.to_thread(open_release_page, key)
+        except (OSError, subprocess.TimeoutExpired, webbrowser.Error) as error:
+            self.notify(f"{error}\n{RELEASE_PAGES[key]}", title="브라우저 실행 실패", severity="error", timeout=8)
 
     @work(exclusive=True, group="scan")
     async def load_statuses(self) -> None:
@@ -311,7 +347,7 @@ class AgentsStatusApp(App[None]):
             StatusKind.CONFIG_ONLY: "yellow",
             StatusKind.MISSING: "dim",
         }
-        for status in self.statuses:
+        for status in sorted(self.statuses, key=lambda item: item.spec.name.casefold()):
             path = str(status.executable) if status.executable else "-"
             table.add_row(
                 f"[{colors[status.status]}]{status.status}[/{colors[status.status]}]",
