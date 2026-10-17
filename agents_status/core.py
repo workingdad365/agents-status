@@ -569,6 +569,16 @@ def _package_names(key: str) -> tuple[str, ...]:
     return (package, *_PACKAGE_ALIASES.get(key, ())) if package else ()
 
 
+def _npm_install_options(package: str) -> tuple[str, ...]:
+    if package not in (
+        *_package_names("claude"), *_package_names("opencode"),
+        *_package_names("pi-bolt"), *_package_names("openclaw"),
+    ):
+        return ()
+    options = (f"--allow-scripts={package}", "--ignore-scripts=false")
+    return (*options, "--include=optional") if package == PACKAGES["claude"] else options
+
+
 def _winget_package_directory(resolved: Path, packages: Path) -> str:
     """WinGet 패키지 루트 기준으로 실행 파일이 속한 <패키지 ID>_<원본 식별자> 디렉터리 이름."""
     canonical = packages.resolve()
@@ -678,13 +688,7 @@ def install_command(status: AgentStatus) -> tuple[UpdateCommand | None, str]:
         return UpdateCommand((bash, "-o", "pipefail", "-c", script), script), ""
     package = PACKAGES.get(status.spec.key)
     if package and (npm := _which("npm")):
-        # npm 12에서 Claude·OpenCode의 필수 바이너리 배치 스크립트 실행을 허용함.
-        scripts = (f"--allow-scripts={package}",) if status.spec.key in ("claude", "opencode", "pi-bolt") else ()
-        if status.spec.key == "claude":
-            # allow-scripts만으로는 ignore-scripts 설정을 덮어쓰지 못함.
-            # 네이티브 바이너리는 optionalDependencies에 포함되므로 omit=optional도 재정의함.
-            scripts += ("--ignore-scripts=false", "--include=optional")
-        argv = (npm, "install", "--global", *scripts, f"{package}@latest")
+        argv = (npm, "install", "--global", *_npm_install_options(package), f"{package}@latest")
         return UpdateCommand(argv, " ".join(argv)), ""
     if package:
         return None, "설치하려면 npm이 필요합니다."
@@ -1022,16 +1026,20 @@ def update_command(status: AgentStatus, *, home: Path | None = None) -> tuple[Up
     if not status.executable:
         return None, "실행 파일이 없어 업데이트할 수 없습니다."
     spec = status.spec
-    if spec.key == "pi-bolt":
-        command = _package_update(status.executable, ("pi-bolt",))
-        if command:
+    if spec.key in ("claude", "opencode", "pi-bolt"):
+        names = _package_names(spec.key)
+        command = _package_update(status.executable, names)
+        if command and (spec.key == "pi-bolt" or command.argv[1] == "install"):
             if command.argv[1] == "install":
-                argv = (*command.argv[:-1], "--allow-scripts=pi-bolt", "--ignore-scripts=false", command.argv[-1])
+                package = command.argv[-1].removesuffix("@latest")
+                argv = (*command.argv[:-1], *_npm_install_options(package), command.argv[-1])
                 command = UpdateCommand(argv, " ".join(argv))
             return command, ""
-        if ("node_modules" in _shim_target(status.executable).parts
-                or (status.executable.parent / "node_modules/pi-bolt/package.json").is_file()):
-            return None, "Pi-Bolt 패키지 설치 경로에서 업데이트에 필요한 npm/Bun을 찾을 수 없습니다."
+        if command is None and (
+            "node_modules" in _shim_target(status.executable).parts
+            or any((status.executable.parent / "node_modules" / package / "package.json").is_file() for package in names)
+        ):
+            return None, f"{spec.name} 패키지 설치 경로에서 업데이트에 필요한 npm/Bun을 찾을 수 없습니다."
     if spec.key == "codex" and status.executable.resolve().is_relative_to((_codex_packages(home) / "standalone").resolve()):
         # 공식 설치 스크립트 설치는 codex update가 같은 스크립트를 비대화형으로 다시 실행하여 갱신함.
         argv = (str(status.executable), "update")
@@ -1044,6 +1052,7 @@ def update_command(status: AgentStatus, *, home: Path | None = None) -> tuple[Up
         argv = (str(status.executable), "update")
         return UpdateCommand(argv, "agy update"), ""
     packages = {
+        "codex": ("@openai/codex",),
         "crush": ("@charmland/crush",),
     }
     if spec.key in packages:
@@ -1051,18 +1060,6 @@ def update_command(status: AgentStatus, *, home: Path | None = None) -> tuple[Up
         if command:
             return command, ""
         return None, f"{spec.name} 설치 경로({status.executable.resolve()})에서 지원하는 업데이트 방식(npm/Bun/Homebrew)을 판별하지 못했습니다."
-    if spec.key == "codex":
-        resolved = status.executable.resolve()
-        if "node_modules" in resolved.parts and (npm := _which("npm")):
-            argv = (npm, "install", "--global", "@openai/codex@latest")
-            return UpdateCommand(argv, "npm install --global @openai/codex@latest"), ""
-        if (brew := _which("brew")) and "Caskroom" in resolved.parts:
-            argv = (brew, "upgrade", "--cask", "codex")
-            return UpdateCommand(argv, "brew upgrade --cask codex"), ""
-        if brew and "Cellar" in resolved.parts:
-            argv = (brew, "upgrade", "codex")
-            return UpdateCommand(argv, "brew upgrade codex"), ""
-        return None, "Codex 설치 방식(npm/Homebrew)을 안전하게 판별할 수 없습니다."
     return None, "이 도구는 설치 방식별 업데이트가 달라 자동 업데이트를 지원하지 않습니다."
 
 

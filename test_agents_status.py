@@ -162,7 +162,7 @@ class DetectionTests(unittest.TestCase):
             self.assertEqual(plan.paths, (link, binary.parent))
             with patch("agents_status.core._which", return_value="npm"):
                 command, reason = install_command(status)
-            self.assertEqual(command.argv, ("npm", "install", "--global", "--allow-scripts=pi-bolt", "pi-bolt@latest"))
+            self.assertEqual(command.argv, ("npm", "install", "--global", "--allow-scripts=pi-bolt", "--ignore-scripts=false", "pi-bolt@latest"))
 
     def test_wsl_ignores_windows_agents_and_preserves_config_status(self):
         for spec in AGENTS:
@@ -345,10 +345,104 @@ class VersionTests(unittest.TestCase):
 
 class UpdateTests(unittest.TestCase):
     def test_self_update_uses_discovered_executable(self):
-        status = AgentStatus(SPECS["opencode"], StatusKind.INSTALLED, Path("/opt/bin/opencode"), "1.0", "openai")
-        command, reason = update_command(status)
-        self.assertEqual(command.argv, (str(status.executable), "upgrade"))
-        self.assertEqual(reason, "")
+        for spec in AGENTS:
+            if spec.update_args:
+                with self.subTest(agent=spec.key):
+                    executable = Path("/opt/bin") / spec.binaries[0]
+                    status = AgentStatus(spec, StatusKind.INSTALLED, executable, "1.0", "unknown")
+                    command, reason = update_command(status)
+                    self.assertEqual(command.argv, (str(executable), *spec.update_args))
+                    self.assertEqual(reason, "")
+
+    @unittest.skipIf(sys.platform == "win32", "POSIX npm placeholder 검증")
+    def test_npm_update_recovers_placeholder_with_original_manager(self):
+        for key, package in (
+            ("claude", "@anthropic-ai/claude-code"), ("opencode", "@opencode/cli"),
+            ("opencode", "opencode-ai"), ("pi-bolt", "pi-bolt"),
+        ):
+            with self.subTest(package=package), tempfile.TemporaryDirectory() as directory:
+                prefix = Path(directory).resolve()
+                root = prefix / "lib/node_modules" / package
+                (root / "bin").mkdir(parents=True)
+                (root / "package.json").write_text(json.dumps({"name": package}))
+                placeholder = root / "bin" / f"{key}.exe"
+                placeholder.write_text('echo "postinstall script was not run"\nexit 1\n')
+                placeholder.chmod(0o755)
+                (prefix / "bin").mkdir()
+                npm = prefix / "bin/npm"
+                npm.touch()
+                executable = prefix / "bin" / key
+                symlink_or_skip(executable, placeholder)
+                status = scan_agent(SPECS[key], home=prefix, env={}, path=str(executable.parent))
+                self.assertEqual(status.status, StatusKind.INSTALLED)
+                self.assertEqual(status.version, "조회 실패")
+                with patch("agents_status.core._which", return_value="/different/bin/npm"):
+                    command, reason = update_command(status)
+                self.assertEqual(reason, "")
+                optional = ("--include=optional",) if key == "claude" else ()
+                self.assertEqual(command.argv, (
+                    str(npm), "install", "--global", "--prefix", str(prefix),
+                    f"--allow-scripts={package}", "--ignore-scripts=false", *optional, f"{package}@latest",
+                ))
+                self.assertEqual(command.display, " ".join(command.argv))
+                if package != "opencode-ai":
+                    with patch("agents_status.core._which", return_value=str(npm)):
+                        install, _ = install_command(status)
+                    self.assertEqual(command.argv[5:], install.argv[3:])
+                npm.unlink()
+                with patch("agents_status.core._which", return_value="/different/bin/npm"):
+                    command, reason = update_command(status)
+                self.assertIsNone(command)
+                self.assertIn("npm/Bun", reason)
+
+    def test_windows_npm_update_preserves_prefix_and_script_options(self):
+        for key, package in (
+            ("claude", "@anthropic-ai/claude-code"), ("opencode", "@opencode/cli"),
+            ("opencode", "opencode-ai"), ("pi-bolt", "pi-bolt"), ("codex", "@openai/codex"),
+        ):
+            with self.subTest(package=package), tempfile.TemporaryDirectory() as directory:
+                prefix = Path(directory).resolve()
+                root = prefix / "node_modules" / package
+                root.mkdir(parents=True)
+                (root / "package.json").write_text(json.dumps({"name": package}))
+                executable = prefix / f"{key}.cmd"
+                executable.touch()
+                npm = prefix / "npm.cmd"
+                npm.touch()
+                status = AgentStatus(SPECS[key], StatusKind.INSTALLED, executable, "조회 실패", "unknown")
+                with patch("agents_status.core._which", return_value="different-npm.cmd"):
+                    command, reason = update_command(status)
+                self.assertEqual(reason, "")
+                options = (f"--allow-scripts={package}", "--ignore-scripts=false") if key != "codex" else ()
+                optional = ("--include=optional",) if key == "claude" else ()
+                self.assertEqual(command.argv, (
+                    str(npm), "install", "--global", "--prefix", str(prefix),
+                    *options, *optional, f"{package}@latest",
+                ))
+                npm.unlink()
+                with patch("agents_status.core._which", return_value=None):
+                    command, reason = update_command(status)
+                self.assertIsNone(command)
+                self.assertIn("npm/Bun", reason)
+
+    def test_bun_and_brew_keep_self_update(self):
+        for key, package in (("claude", "@anthropic-ai/claude-code"), ("opencode", "@opencode/cli")):
+            for manager in ("bun", "brew"):
+                with self.subTest(agent=key, manager=manager), tempfile.TemporaryDirectory() as directory:
+                    prefix = Path(directory).resolve()
+                    (prefix / "bin").mkdir()
+                    (prefix / "bin" / manager).touch()
+                    root = prefix / "install/global/node_modules" / package if manager == "bun" else prefix / "Cellar" / key / "1.0"
+                    (root / "bin").mkdir(parents=True)
+                    (root / "package.json").write_text(json.dumps({"name": package}))
+                    target = root / "bin" / key
+                    target.touch()
+                    executable = prefix / "bin" / key
+                    symlink_or_skip(executable, target)
+                    status = AgentStatus(SPECS[key], StatusKind.INSTALLED, executable, "1.0", "unknown")
+                    command, reason = update_command(status)
+                    self.assertEqual(reason, "")
+                    self.assertEqual(command.argv, (str(executable), *status.spec.update_args))
 
     def test_missing_agent_cannot_update(self):
         status = AgentStatus(SPECS["claude"], StatusKind.MISSING, None, "-", "-")
@@ -356,14 +450,16 @@ class UpdateTests(unittest.TestCase):
         self.assertIsNone(command)
         self.assertIn("실행 파일", reason)
 
-    def test_codex_npm_install_is_detected(self):
-        status = AgentStatus(
-            SPECS["codex"], StatusKind.INSTALLED,
-            Path("/home/user/.nvm/bin/node_modules/@openai/codex/bin/codex"), "1.0", "openai",
-        )
-        with patch("shutil.which", return_value="/usr/bin/npm"):
-            command, _ = update_command(status)
-        self.assertEqual(command.argv[-2:], ("--global", "@openai/codex@latest"))
+    def test_codex_npm_update_without_original_manager_does_not_fall_back(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve() / "lib/node_modules/@openai/codex"
+            (root / "bin").mkdir(parents=True)
+            (root / "package.json").write_text('{"name":"@openai/codex"}')
+            status = AgentStatus(SPECS["codex"], StatusKind.INSTALLED, root / "bin/codex.js", "1.0", "openai")
+            with patch("agents_status.core._which", return_value="/different/bin/npm"):
+                command, reason = update_command(status)
+            self.assertIsNone(command)
+            self.assertIn("판별하지 못했습니다", reason)
 
     def test_codex_standalone_install_uses_self_update(self):
         # 공식 설치 스크립트는 ~/.local/bin/codex 링크를 ~/.codex/packages/standalone/current/codex로 연결함.
@@ -393,6 +489,7 @@ class UpdateTests(unittest.TestCase):
 
     def test_package_updates_follow_symlink_and_original_manager(self):
         for key, package, binary in (
+            ("codex", "@openai/codex", "codex"),
             ("crush", "@charmland/crush", "crush"),
             ("pi-bolt", "pi-bolt", "pi-bolt"),
         ):
@@ -789,15 +886,20 @@ class WorkingDirectoryTests(unittest.IsolatedAsyncioTestCase):
                 folder.mkdir()
             if sys.platform == "win32":
                 probe = bin_dir / "copilot.cmd"
-                probe.write_text("@echo off\ncd\n", encoding="utf-8")
+                probe.write_text("@echo off\ncd > probe-cwd.txt\necho 1.0\n", encoding="utf-8")
             else:
                 probe = bin_dir / "copilot"
-                probe.write_text(f"#!{sys.executable}\nimport os\nprint(os.getcwd())\n", encoding="utf-8")
+                probe.write_text(
+                    f"#!{sys.executable}\nimport os\nfrom pathlib import Path\n"
+                    "Path('probe-cwd.txt').write_text(os.getcwd())\nprint('1.0')\n", encoding="utf-8",
+                )
             probe.chmod(0o755)
             scanned = scan_agent(SPECS["copilot"], home=home, env={}, path=str(bin_dir))
-            self.assertEqual(scanned.version, str(home))
+            self.assertEqual(scanned.version, "1.0")
+            self.assertEqual((home / "probe-cwd.txt").read_text().strip(), str(home))
             scanned = scan_agent(SPECS["copilot"], home=home, env={}, path=str(bin_dir), cwd=scratch)
-            self.assertEqual(scanned.version, str(scratch))
+            self.assertEqual(scanned.version, "1.0")
+            self.assertEqual((scratch / "probe-cwd.txt").read_text().strip(), str(scratch))
 
 
 class UninstallTests(unittest.IsolatedAsyncioTestCase):
@@ -1586,17 +1688,20 @@ class UninstallTests(unittest.IsolatedAsyncioTestCase):
                 winreg.DeleteKey(winreg.HKEY_CURRENT_USER, key_path)
                 winreg.DeleteKey(winreg.HKEY_CURRENT_USER, r"Software\agents-status-test")
 
-    async def test_native_wrapper_install_allows_required_postinstall(self):
-        for key, package in (("claude", "@anthropic-ai/claude-code"), ("opencode", "@opencode/cli")):
+    async def test_install_allows_required_postinstall(self):
+        for key, package in (
+            ("claude", "@anthropic-ai/claude-code"), ("opencode", "@opencode/cli"),
+            ("pi-bolt", "pi-bolt"), ("openclaw", "openclaw"),
+        ):
             for system in ("linux", "win32", "darwin"):
                 with self.subTest(agent=key, system=system), patch("agents_status.core.sys.platform", system), patch("agents_status.core._which", return_value="/bin/npm"):
                     status = AgentStatus(SPECS[key], StatusKind.MISSING, None, "-", "-")
                     command, reason = install_command(status)
                     self.assertEqual(reason, "")
-                    native_options = ("--ignore-scripts=false", "--include=optional") if key == "claude" else ()
+                    optional = ("--include=optional",) if key == "claude" else ()
                     self.assertEqual(command.argv, (
                         "/bin/npm", "install", "--global",
-                        f"--allow-scripts={package}", *native_options, f"{package}@latest",
+                        f"--allow-scripts={package}", "--ignore-scripts=false", *optional, f"{package}@latest",
                     ))
                     self.assertIn(f"--allow-scripts={package}", command.display)
 
