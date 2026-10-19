@@ -634,6 +634,13 @@ class AppTests(unittest.IsolatedAsyncioTestCase):
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.pause()
             self.assertEqual((app.title, app.sub_title), (AgentsStatusApp.TITLE, platform_name()))
+            header = app.query_one("Header")
+            summary_y = app.query_one("#summary").region.y
+            for target in ("HeaderTitle", "#app-version", "HeaderTitle"):
+                await pilot.click(target)
+                await pilot.pause()
+                self.assertEqual(header.size.height, 1)
+                self.assertEqual(app.query_one("#summary").region.y, summary_y)
 
     async def test_selection_changes_install_label_and_command(self):
         statuses = [AgentStatus(SPECS[key], kind, executable, "-", "-") for key, kind, executable in (

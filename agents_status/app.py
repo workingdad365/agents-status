@@ -239,6 +239,7 @@ class AgentsStatusApp(App[None]):
     SUB_TITLE = platform_name()
     CSS = """
     Screen { layout: vertical; }
+    Header, Header.-tall { height: 1; }
     Header HeaderClockSpace { display: none; }
     #app-version { dock: right; width: auto; padding: 0 1; content-align: right middle; height: 100%; }
     #self-update-bar { height: 1; padding: 0 1; }
