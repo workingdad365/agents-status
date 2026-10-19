@@ -79,6 +79,7 @@ class AppUpdateTests(unittest.IsolatedAsyncioTestCase):
                 app.available_release = RELEASE
                 with patch("agents_status.app.installation_root", return_value=Path("/managed")):
                     await pilot.click("#self-update")
+                await pilot.pause()
                 await pilot.click("#apply")
                 try:
                     self.assertTrue(await asyncio.to_thread(started.wait, 2))
