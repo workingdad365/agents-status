@@ -70,6 +70,7 @@ Linux 배포본은 GLIBC 2.28 기반 manylinux 컨테이너에서 생성하고, 
 | 삭제 | 프로그램 삭제 및 설정 보존 여부 선택 |
 | 지침 동기화 | 선택한 에이전트에 글로벌 지침 반영 |
 | 전체 동기화 | 지원하는 모든 에이전트에 글로벌 지침 반영 |
+| 기본 설정 적용 | 설치된 Command Code·Crush·OpenCode에 누락된 기본 설정 추가 |
 | 앱 업데이트 확인 / 앱 업데이트 | agents-status 자체 업데이트 확인 및 설치 |
 | `R` | 설치 상태와 버전 새로고침 |
 | 마우스 드래그 / `Ctrl+C` | 하단 로그 선택 및 복사 |
@@ -106,6 +107,18 @@ Claude, Codex CLI, Command Code, Copilot CLI, OpenCode, Kilo, OMP, Pi, Pi-Bolt, 
 에이전트별 공식 설치·업데이트 명령 또는 기존 패키지 관리자를 사용함. 설치 방식을 판별할 수 없으면 자동 변경 대신 사유를 표시함. 에이전트에 따라 npm 등 별도의 실행·설치 도구가 필요할 수 있음.
 
 **Pi와 Pi-Bolt는 설정·인증·세션·글로벌 지침을 공유함. 어느 쪽에서든 설정 삭제를 선택하면 양쪽에 영향을 줌.**
+
+## 기본 설정 적용
+
+설치된 에이전트만 대상으로 다음 설정을 추가함. 기존 키의 값과 다른 설정은 보존하며, 재실행 시 이미 있는 항목은 건너뜀. 잘못된 JSON 파일은 수정하지 않고 로그에 실패를 표시함.
+
+| 에이전트 | 설정 파일 | 추가 항목 |
+| --- | --- | --- |
+| Command Code | `~/.commandcode/config.json` | `tasteLearning: false` |
+| Crush | `~/.config/crush/crush.json` | `options.data_directory: ~/.local/share/crush/project-data`의 절대 경로 |
+| OpenCode | `~/.config/opencode/cli.json` | `$schema: https://opencode.ai/v2/cli.json`, `terminal.copy: select` |
+
+`XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `CRUSH_GLOBAL_CONFIG` 지정 시 해당 경로를 사용함. Crush는 모든 프로젝트에 공통 데이터 경로를 적용함. Command Code의 프로젝트별 Taste 설정은 사용자 기본값보다 우선함.
 
 ## 글로벌 지침 동기화
 

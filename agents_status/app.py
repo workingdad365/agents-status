@@ -32,6 +32,7 @@ from .core import (
     install_command, scan_agents, run_uninstall, run_update, uninstall_plan, update_command,
 )
 from .instructions import default_instructions_path, sync_instructions
+from .defaults import apply_defaults
 
 
 def _cell_to_index(text: str, cell: int) -> int:
@@ -247,8 +248,8 @@ class AgentsStatusApp(App[None]):
     #self-update { width: auto; min-width: 0; height: 1; border: none; padding: 0 1; }
     #summary { height: 3; padding: 1 2; background: $boost; }
     DataTable { height: 1fr; }
-    #actions { height: 1; padding: 0 1; }
-    #actions Button { width: auto; min-width: 0; height: 1; border: none; padding: 0 1; margin-right: 1; }
+    #actions, #defaults-actions { height: 1; padding: 0 1; }
+    #actions Button, #defaults-actions Button { width: auto; min-width: 0; height: 1; border: none; padding: 0 1; margin-right: 1; }
     #action-status { height: 1; padding: 0 1; }
     #instructions-source { width: 100%; height: auto; padding: 0 1; content-align: left top; color: $text-muted; }
     #progress { display: none; width: 8; height: 1; }
@@ -289,6 +290,8 @@ class AgentsStatusApp(App[None]):
             yield Button("삭제", id="delete", variant="error")
             yield Button("지침 동기화", id="sync")
             yield Button("지침 전체 동기화", id="sync-all")
+        with Horizontal(id="defaults-actions"):
+            yield Button("기본 설정 적용", id="apply-defaults")
         yield Static(Text(f"공통 지침 위치: {self.instructions_source}", overflow="fold", no_wrap=False), id="instructions-source")
         with Horizontal(id="action-status"):
             yield LoadingIndicator(id="progress")
@@ -382,6 +385,7 @@ class AgentsStatusApp(App[None]):
         self.query_one("#delete", Button).disabled = disabled or status is None or status.status == StatusKind.MISSING
         self.query_one("#sync", Button).disabled = disabled or status is None
         self.query_one("#sync-all", Button).disabled = disabled
+        self.query_one("#apply-defaults", Button).disabled = disabled
         self.query_one("#self-update", Button).disabled = disabled or self._checking_release
 
     @work(exclusive=True, group="release-check")
@@ -458,6 +462,35 @@ class AgentsStatusApp(App[None]):
     def sync_all_pressed(self) -> None:
         if not self.busy:
             self._start_sync(AGENTS)
+
+    @on(Button.Pressed, "#apply-defaults")
+    def defaults_pressed(self) -> None:
+        if not self.busy:
+            self.busy = True
+            self._set_buttons(True)
+            self.apply_agent_defaults()
+
+    @work(exclusive=True, group="update")
+    async def apply_agent_defaults(self) -> None:
+        log = self.query_one("#log", RichLog)
+        self.query_one("#progress", LoadingIndicator).styles.display = "block"
+        self.query_one("#activity", Label).update("기본 설정 적용 중…")
+        try:
+            results = await asyncio.to_thread(apply_defaults, tuple(self.statuses))
+            for result in results:
+                detail = f" ({result.detail})" if result.detail else ""
+                log.write(Text(f"[{result.outcome}] {result.name}: {result.destination}{detail}"))
+            written = sum(result.outcome == "write" for result in results)
+            skipped = sum(result.outcome == "skip" for result in results)
+            failed = sum(result.outcome == "error" for result in results)
+            summary = f"기본 설정 적용: {written}개 작성, {skipped}개 건너뜀, {failed}개 실패"
+            log.write(Text(summary))
+            self.notify(summary, severity="error" if failed else "information")
+        finally:
+            self.query_one("#progress", LoadingIndicator).styles.display = "none"
+            self.query_one("#activity", Label).update("")
+            self.busy = False
+            self._set_buttons(False)
 
     def _start_sync(self, specs: tuple[AgentSpec, ...]) -> None:
         self.busy = True
