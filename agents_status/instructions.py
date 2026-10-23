@@ -4,6 +4,7 @@ from dataclasses import dataclass
 import os
 from pathlib import Path
 import stat
+import sys
 import tempfile
 from typing import Mapping, Sequence
 
@@ -41,8 +42,27 @@ class SyncResult:
     detail: str = ""
 
 
+def user_instructions_path() -> Path:
+    """앱 업데이트와 독립적인 사용자 편집본 위치를 반환함."""
+    if sys.platform == "win32":
+        base = Path(os.environ.get("APPDATA", str(Path.home() / "AppData" / "Roaming")))
+    elif sys.platform == "darwin":
+        base = Path.home() / "Library" / "Application Support"
+    else:
+        base = Path(os.environ.get("XDG_CONFIG_HOME", str(Path.home() / ".config")))
+    return base / "agents-status" / "GLOBAL_INSTRUCTIONS.md"
+
+
 def default_instructions_path() -> Path:
-    """소스 실행은 프로젝트 원본, 패키지 설치는 포함된 원본을 사용함."""
+    """사용자 편집본을 우선하고 없으면 프로젝트 또는 패키지 원본을 사용함."""
+    custom = user_instructions_path()
+    if custom.is_file():
+        return custom
+    return bundled_instructions_path()
+
+
+def bundled_instructions_path() -> Path:
+    """사용자 편집본과 독립적으로 배포 원본 위치를 반환함."""
     package = Path(__file__).resolve().parent
     bundled = package / "GLOBAL_INSTRUCTIONS.md"
     return bundled if bundled.is_file() else package.parent / "GLOBAL_INSTRUCTIONS.md"

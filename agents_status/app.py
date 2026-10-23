@@ -4,6 +4,7 @@ import argparse
 import asyncio
 from pathlib import Path
 import platform
+import shutil
 import subprocess
 import sys
 import webbrowser
@@ -11,7 +12,7 @@ import webbrowser
 from rich.cells import get_character_cell_size
 from rich.text import Text
 from textual import events, on, work
-from textual.app import App, ComposeResult
+from textual.app import App, ComposeResult, SuspendNotSupported
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.geometry import Offset
@@ -32,7 +33,7 @@ from .core import (
     AGENTS, AgentSpec, AgentStatus, StatusKind, UpdateCommand, UninstallPlan, config_paths,
     install_command, scan_agents, run_uninstall, run_update, uninstall_plan, update_command,
 )
-from .instructions import default_instructions_path, sync_instructions
+from .instructions import bundled_instructions_path, default_instructions_path, sync_instructions, user_instructions_path
 from .defaults import apply_defaults
 
 
@@ -287,8 +288,8 @@ class AgentsStatusApp(App[None]):
     #self-update { width: auto; min-width: 0; height: 1; border: none; padding: 0 1; }
     #summary { height: 3; padding: 1 2; background: $boost; }
     DataTable { height: 1fr; }
-    #actions, #defaults-actions { height: 1; padding: 0 1; }
-    #actions Button, #defaults-actions Button { width: auto; min-width: 0; height: 1; border: none; padding: 0 1; margin-right: 1; }
+    #actions { height: 1; padding: 0 1; overflow-x: auto; scrollbar-size-horizontal: 0; }
+    #actions Button { width: auto; min-width: 0; height: 1; border: none; padding: 0 1; }
     #action-status { height: 1; padding: 0 1; }
     #instructions-source { width: 100%; height: auto; padding: 0 1; content-align: left top; color: $text-muted; }
     #progress { display: none; width: 8; height: 1; }
@@ -313,6 +314,7 @@ class AgentsStatusApp(App[None]):
         self.prepared_update: PreparedUpdate | None = None
         self._checking_release = False
         self._preparing_update = False
+        self._custom_instructions_source = instructions_source is not None
         self.instructions_source = (instructions_source if instructions_source is not None else default_instructions_path()).expanduser().resolve()
 
     def compose(self) -> ComposeResult:
@@ -327,9 +329,9 @@ class AgentsStatusApp(App[None]):
             yield Button("새로고침", id="refresh", variant="default")
             yield Button("업데이트", id="update", variant="primary")
             yield Button("삭제", id="delete", variant="error")
+            yield Button("지침 편집", id="edit-instructions")
             yield Button("지침 동기화", id="sync")
             yield Button("지침 전체 동기화", id="sync-all")
-        with Horizontal(id="defaults-actions"):
             yield Button("기본 설정 적용", id="apply-defaults")
         yield Static(Text(f"공통 지침 위치: {self.instructions_source}", overflow="fold", no_wrap=False), id="instructions-source")
         with Horizontal(id="action-status"):
@@ -440,6 +442,7 @@ class AgentsStatusApp(App[None]):
         self.query_one("#sync", Button).disabled = disabled or status is None
         self.query_one("#sync-all", Button).disabled = disabled
         self.query_one("#apply-defaults", Button).disabled = disabled
+        self.query_one("#edit-instructions", Button).disabled = disabled
         self.query_one("#self-update", Button).disabled = disabled or self._checking_release
 
     @work(exclusive=True, group="release-check")
@@ -516,6 +519,44 @@ class AgentsStatusApp(App[None]):
     def sync_all_pressed(self) -> None:
         if not self.busy:
             self._start_sync(AGENTS)
+
+    @on(Button.Pressed, "#edit-instructions")
+    def edit_instructions_pressed(self) -> None:
+        if self.busy:
+            return
+        candidates = ("edit", "notepad") if sys.platform == "win32" else ("nano", "vi")
+        editor = next((path for name in candidates if (path := shutil.which(name))), None)
+        if editor is None:
+            self.notify(f"편집기를 찾지 못했습니다: {', '.join(candidates)}", severity="error")
+            return
+        self.busy = True
+        self._set_buttons(True)
+        error_message = ""
+        try:
+            if not self._custom_instructions_source:
+                destination = user_instructions_path()
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                if not destination.exists():
+                    content = self.instructions_source.read_bytes()
+                    with destination.open("xb") as stream:
+                        stream.write(content)
+                self.instructions_source = destination.resolve()
+                self.query_one("#instructions-source", Static).update(Text(f"공통 지침 위치: {self.instructions_source}"))
+            with self.suspend():
+                # 오류도 suspend 블록 안에서 처리하여 터미널 복구를 보장함.
+                try:
+                    subprocess.run([editor, str(self.instructions_source)], check=True)
+                except (OSError, subprocess.SubprocessError) as error:
+                    error_message = str(error)
+        except (OSError, SuspendNotSupported) as error:
+            error_message = str(error)
+        finally:
+            self.busy = False
+            self._set_buttons(False)
+        if error_message:
+            self.notify(f"지침 편집기를 실행하지 못했습니다: {error_message}", severity="error")
+        else:
+            self.query_one("#log", RichLog).write("지침 편집기를 닫았습니다. 저장한 내용을 적용하려면 지침 동기화를 실행하세요.")
 
     @on(Button.Pressed, "#apply-defaults")
     def defaults_pressed(self) -> None:
@@ -727,7 +768,7 @@ def main() -> None:
         from .self_update import _ssl_context
 
         _ssl_context()
-        source = default_instructions_path()
+        source = bundled_instructions_path()
         if not source.is_file() or not source.read_text(encoding="utf-8").strip():
             parser.exit(1, "번들 글로벌 지침 파일을 읽을 수 없습니다.\n")
         if get_character_cell_size("한") != 2:

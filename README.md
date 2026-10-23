@@ -69,6 +69,7 @@ Linux 배포본은 GLIBC 2.28 기반 manylinux 컨테이너에서 생성하고, 
 | `U` / 설치·업데이트 | 선택한 에이전트 설치 또는 업데이트 |
 | 삭제 | 프로그램 삭제 및 설정 보존 여부 선택 |
 | 지침 동기화 | 선택한 에이전트에 글로벌 지침 반영 |
+| 지침 편집 | 글로벌 지침 원본을 외부 편집기로 열기 |
 | 전체 동기화 | 지원하는 모든 에이전트에 글로벌 지침 반영 |
 | 기본 설정 적용 | 설치된 Command Code·Crush·OpenCode에 누락된 기본 설정 추가 |
 | 앱 업데이트 확인 / 앱 업데이트 | agents-status 자체 업데이트 확인 및 설치 |
@@ -122,7 +123,9 @@ Claude, Codex CLI, Command Code, Copilot CLI, OpenCode, Kilo, OMP, Pi, Pi-Bolt, 
 
 ## 글로벌 지침 동기화
 
-기본 원본은 앱에 포함된 `GLOBAL_INSTRUCTIONS.md`이며, 사용 중인 원본 경로는 화면과 로그에 표시함. 별도 파일을 사용하려면 실행 시 지정함.
+기본 원본은 앱에 포함된 `GLOBAL_INSTRUCTIONS.md`이며, 사용 중인 원본 경로는 화면과 로그에 표시함. `지침 편집`은 Linux·macOS에서 nano, vi 순으로, Windows에서 edit, notepad 순으로 설치된 편집기를 사용함. 저장 후 편집기를 종료하면 앱으로 돌아오며, `지침 동기화` 또는 `지침 전체 동기화`로 반영함.
+
+기본 원본을 처음 편집할 때 사용자 편집본을 생성하고 이후 실행에서도 우선 사용함. Linux는 `$XDG_CONFIG_HOME/agents-status/GLOBAL_INSTRUCTIONS.md`(기본 `~/.config`), macOS는 `~/Library/Application Support/agents-status/GLOBAL_INSTRUCTIONS.md`, Windows는 `%APPDATA%\agents-status\GLOBAL_INSTRUCTIONS.md`에 보관하므로 앱 업데이트 후에도 유지됨. `--instructions`로 지정한 파일은 해당 파일을 직접 편집함. 별도 파일을 사용하려면 실행 시 지정함.
 
 ```bash
 agents-status --instructions /path/to/GLOBAL_INSTRUCTIONS.md

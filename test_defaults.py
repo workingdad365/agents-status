@@ -83,7 +83,7 @@ class DefaultsButtonTests(unittest.IsolatedAsyncioTestCase):
         items = statuses()
         with patch("agents_status.app.scan_agents", AsyncMock(return_value=items)), patch("agents_status.app.apply_defaults", return_value=[]) as apply:
             app = AgentsStatusApp()
-            async with app.run_test(size=(80, 30)) as pilot:
+            async with app.run_test(size=(120, 30)) as pilot:
                 await pilot.pause()
                 await pilot.click("#apply-defaults")
                 await app.workers.wait_for_complete()
