@@ -14,9 +14,9 @@ from agents_status.instructions import default_instructions_path
 class EditorTests(unittest.IsolatedAsyncioTestCase):
     async def test_default_copy_is_persistent_and_buttons_share_one_row(self):
         with tempfile.TemporaryDirectory() as directory:
-            source = Path(directory) / "bundled.md"
+            source = Path(directory).resolve() / "bundled.md"
             source.write_text("original", encoding="utf-8")
-            destination = Path(directory) / "config/GLOBAL_INSTRUCTIONS.md"
+            destination = Path(directory).resolve() / "config/GLOBAL_INSTRUCTIONS.md"
             with patch("agents_status.app.scan_agents", AsyncMock(return_value=[])), patch("agents_status.app.default_instructions_path", return_value=source), patch("agents_status.app.user_instructions_path", return_value=destination), patch("agents_status.app.shutil.which", return_value="/usr/bin/nano"), patch("agents_status.app.subprocess.run") as run:
                 app = AgentsStatusApp()
                 async with app.run_test(size=(120, 30)) as pilot:
@@ -38,7 +38,7 @@ class EditorTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_explicit_source_windows_editor_failure_and_busy(self):
         with tempfile.TemporaryDirectory() as directory:
-            source = Path(directory) / "custom instructions.md"
+            source = Path(directory).resolve() / "custom instructions.md"
             source.write_text("custom", encoding="utf-8")
             with patch("agents_status.app.scan_agents", AsyncMock(return_value=[])):
                 app = AgentsStatusApp(instructions_source=source)
