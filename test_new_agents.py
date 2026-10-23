@@ -123,17 +123,18 @@ class NewAgentTests(unittest.IsolatedAsyncioTestCase):
         expected = original + ";" + str(self.home / ".qoder/bin/qodercli") + ";" + str(self.home / ".qoder/entry")
         for initial, code, result in ((original, 0, expected), (expected, 0, expected), (original, 7, None)):
             with self.subTest(code=code, already_registered=initial == expected):
-                # 정상 환경에서 필수 모듈을 로드한 뒤 검증할 PATH를 주입함.
+                # PowerShell 초기화에는 실제 사용자 프로필을 유지하고 테스트 경로는 시작 후 주입함.
                 stub = (
                     "Import-Module Microsoft.PowerShell.Utility; "
                     "Import-Module Microsoft.PowerShell.Management; "
+                    f"$env:USERPROFILE = '{str(self.home).replace(chr(39), chr(39) * 2)}'; "
                     f"$env:PATH = '{initial.replace(chr(39), chr(39) * 2)}'; "
                     f"function Invoke-RestMethod {{ '$global:LASTEXITCODE = {code}' }}; "
                 )
                 process = subprocess.run(
                     (command.argv[0], "-NonInteractive", *command.argv[1:-1], stub + script),
                     capture_output=True, text=True, errors="replace", timeout=30,
-                    env={**os.environ, "USERPROFILE": str(self.home)},
+                    env=os.environ.copy(),
                 )
                 self.assertEqual(process.returncode, code, process.stderr)
                 if result is None:
