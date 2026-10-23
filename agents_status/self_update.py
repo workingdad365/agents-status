@@ -11,6 +11,7 @@ import re
 import secrets
 import shutil
 import signal
+import ssl
 import stat
 import subprocess
 import sys
@@ -22,6 +23,9 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import zipfile
+
+import certifi
+import truststore
 
 from . import __version__
 
@@ -187,14 +191,27 @@ class _TrustedRedirect(urllib.request.HTTPRedirectHandler):
         return super().redirect_request(request, response, code, message, headers, newurl)
 
 
+def _ssl_context() -> ssl.SSLContext:
+    """시스템 신뢰 저장소와 번들 공인 CA를 함께 사용한다."""
+    if sys.platform in ("darwin", "win32"):
+        context = truststore.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        context.load_default_certs()
+    else:
+        context = ssl.create_default_context()
+    context.load_verify_locations(cafile=certifi.where())
+    return context
+
+
 def _download(url: str, destination: Path | None, limit: int) -> bytes:
     _trusted_url(url)
     request = urllib.request.Request(url, headers={"User-Agent": f"agents-status/{__version__}", "Accept": "application/vnd.github+json" if url == API_URL else "application/octet-stream"})
-    opener = urllib.request.build_opener(_TrustedRedirect())
     deadline = time.monotonic() + DOWNLOAD_SECONDS
     data = bytearray()
     stream = None
     try:
+        opener = urllib.request.build_opener(
+            _TrustedRedirect(), urllib.request.HTTPSHandler(context=_ssl_context()),
+        )
         with opener.open(request, timeout=NETWORK_TIMEOUT) as response:
             _trusted_url(response.geturl(), redirected=True)
             length = response.headers.get("Content-Length")

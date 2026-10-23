@@ -4,6 +4,7 @@ import io
 import json
 import os
 from pathlib import Path
+import ssl
 import stat
 import subprocess
 import sys
@@ -143,6 +144,37 @@ class UpdateTests(unittest.TestCase):
         with patch.object(update.urllib.request, "build_opener", return_value=opener), self.assertRaises(update.NetworkError):
             update.check_for_update()
         self.assert_preserved()
+
+    def test_bundled_ca_works_without_build_machine_certificate_paths(self):
+        empty = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        self.assertEqual(empty.cert_store_stats()["x509_ca"], 0)
+        with patch.object(update.sys, "platform", "linux"), patch.object(update.ssl, "create_default_context", return_value=empty):
+            context = update._ssl_context()
+        self.assertGreater(context.cert_store_stats()["x509_ca"], 0)
+        self.assertEqual(context.verify_mode, ssl.CERT_REQUIRED)
+        self.assertTrue(context.check_hostname)
+
+    def test_native_trust_store_is_used_on_macos_and_windows(self):
+        for system in ("darwin", "win32"):
+            with self.subTest(system=system), patch.object(update.sys, "platform", system), patch.object(update.truststore, "SSLContext") as factory:
+                context = update._ssl_context()
+                factory.assert_called_once_with(ssl.PROTOCOL_TLS_CLIENT)
+                context.load_default_certs.assert_called_once_with()
+                context.load_verify_locations.assert_called_once_with(cafile=update.certifi.where())
+
+    def test_download_uses_explicit_verified_context_and_reports_tls_errors(self):
+        context = update._ssl_context()
+        opener = MagicMock()
+        opener.open.side_effect = urllib.error.URLError(ssl.SSLCertVerificationError("untrusted"))
+        with patch.object(update, "_ssl_context", return_value=context), patch.object(update.urllib.request, "build_opener", return_value=opener) as build:
+            with self.assertRaises(update.NetworkError):
+                update._download(update.API_URL, None, 1024)
+        handlers = build.call_args.args
+        self.assertIsInstance(handlers[0], update._TrustedRedirect)
+        self.assertIsInstance(handlers[1], update.urllib.request.HTTPSHandler)
+        self.assertIs(handlers[1]._context, context)
+        self.assertEqual(context.verify_mode, ssl.CERT_REQUIRED)
+        self.assertTrue(context.check_hostname)
 
     def test_download_limits_and_redirect_allowlist(self):
         for url in ("http://github.com/x", "https://github.com/other/repo/releases/download/v1/a", "https://github.com@evil.example/a", "file:///tmp/payload", "https://github.com:bad/a"):

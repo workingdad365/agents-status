@@ -670,6 +670,9 @@ def main() -> None:
     parser.add_argument("--instructions", type=Path, help="동기화할 글로벌 지침 원본 경로")
     args = parser.parse_args()
     if args.self_check:
+        from .self_update import _ssl_context
+
+        _ssl_context()
         source = default_instructions_path()
         if not source.is_file() or not source.read_text(encoding="utf-8").strip():
             parser.exit(1, "번들 글로벌 지침 파일을 읽을 수 없습니다.\n")
