@@ -22,6 +22,7 @@ class NewAgentTests(unittest.IsolatedAsyncioTestCase):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         self.home = Path(temporary.name)
+        self.process_environment = os.environ.copy()
         environment = patch.dict(os.environ, {}, clear=True)
         environment.start()
         self.addCleanup(environment.stop)
@@ -104,7 +105,8 @@ class NewAgentTests(unittest.IsolatedAsyncioTestCase):
 
     @unittest.skipUnless(os.name == "nt", "Windows PowerShell 설치 후 PATH 검증")
     def test_qoder_install_repairs_long_path_without_duplicates_or_failed_install_changes(self):
-        shell = shutil.which("pwsh") or shutil.which("powershell")
+        path = self.process_environment.get("PATH", "")
+        shell = shutil.which("pwsh.exe", path=path) or shutil.which("powershell.exe", path=path)
         if not shell:
             candidate = Path(r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe")
             shell = str(candidate) if candidate.is_file() else None
@@ -134,7 +136,7 @@ class NewAgentTests(unittest.IsolatedAsyncioTestCase):
                 process = subprocess.run(
                     (command.argv[0], "-NonInteractive", *command.argv[1:-1], stub + script),
                     capture_output=True, text=True, errors="replace", timeout=30,
-                    env=os.environ.copy(),
+                    env=self.process_environment,
                 )
                 self.assertEqual(process.returncode, code, process.stderr)
                 if result is None:
