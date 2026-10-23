@@ -706,7 +706,7 @@ class AppTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_log_drag_selection_copies_text_and_click_clears(self):
         status = AgentStatus(SPECS["pi"], StatusKind.INSTALLED, Path("/bin/pi"), "1.0.0", "openai")
-        with patch("agents_status.app.scan_agents", AsyncMock(return_value=[status])):
+        with patch("agents_status.app.scan_agents", AsyncMock(return_value=[status])), patch("agents_status.app.sys.platform", "linux"):
             app = AgentsStatusApp()
             async with app.run_test(size=(40, 30)) as pilot:
                 await pilot.pause()

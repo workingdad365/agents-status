@@ -65,7 +65,7 @@ class TableInteractionTests(unittest.IsolatedAsyncioTestCase):
                 browser.assert_not_called()
 
     async def test_only_log_can_select_and_copy(self):
-        with patch("agents_status.app.scan_agents", AsyncMock(return_value=[])):
+        with patch("agents_status.app.scan_agents", AsyncMock(return_value=[])), patch("agents_status.app.sys.platform", "linux"):
             app = AgentsStatusApp()
             async with app.run_test() as pilot:
                 await pilot.pause()

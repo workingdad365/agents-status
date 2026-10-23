@@ -14,6 +14,7 @@ from textual import events, on, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
+from textual.geometry import Offset
 from textual.message import Message
 from textual.screen import ModalScreen
 from textual.selection import Selection
@@ -67,6 +68,44 @@ class SelectableRichLog(RichLog):
     RichLog는 선택 영역의 텍스트 추출과 강조 표시를 구현하지 않으므로
     Log 위젯과 같은 방식으로 문자 오프셋 메타와 선택 스타일을 적용함.
     """
+
+    def on_mount(self) -> None:
+        self._drag_position: Offset | None = None
+        self._dragging = False
+        self.set_interval(0.05, self._scroll_selection)
+
+    def on_mouse_down(self, event: events.MouseDown) -> None:
+        if event.button == 1 and self.scrollable_content_region.contains(*event.screen_offset):
+            self._drag_position = event.screen_offset
+            self._dragging = False
+            self.capture_mouse()
+
+    def on_mouse_move(self, event: events.MouseMove) -> None:
+        if self._drag_position is not None:
+            self._dragging |= self._drag_position != event.screen_offset
+            self._drag_position = event.screen_offset
+
+    def on_mouse_up(self, event: events.MouseUp) -> None:
+        self._drag_position = None
+        self.release_mouse()
+
+    def _scroll_selection(self) -> None:
+        position = self._drag_position
+        screen = self.screen
+        if position is None or not self._dragging or not screen._selecting or not self.lines:
+            return
+        region = self.scrollable_content_region
+        direction = -1 if position.y <= region.y else 1 if position.y >= region.bottom - 1 else 0
+        if not direction:
+            return
+        previous_y = self.scroll_y
+        self.scroll_relative(y=direction, animate=False, immediate=True)
+        if self.scroll_y == previous_y:
+            return
+        row = min(len(self.lines) - 1, int(self.scroll_y) + (0 if direction < 0 else region.height - 1))
+        column = max(0, min(position.x - region.x, region.width - 1)) + int(self.scroll_x)
+        # Textual의 선택 시작점은 유지하고 스크롤된 문서 좌표로 끝점만 갱신함.
+        screen._select_end = (self, position, Offset(_cell_to_index(self.lines[row].text, column), row))
 
     def get_selection(self, selection: Selection) -> tuple[str, str] | None:
         text = "\n".join(strip.text for strip in self.lines)
@@ -311,12 +350,27 @@ class AgentsStatusApp(App[None]):
 
     @on(events.TextSelected)
     def copy_selection(self) -> None:
-        # 마우스 버튼을 놓으면 드래그로 선택한 텍스트를 OSC 52로 터미널 클립보드에 복사함.
+        # macOS는 터미널의 OSC 52 지원 여부와 무관하게 시스템 클립보드에 복사함.
         log = self.query_one("#log", SelectableRichLog)
         selection = log.text_selection
         text = log.get_selection(selection)[0] if selection is not None else ""
         if text:
+            if sys.platform == "darwin":
+                self.copy_macos_selection(text)
+                return
             self.copy_to_clipboard(text)
+            self.notify("선택한 텍스트를 클립보드에 복사했습니다.", timeout=2)
+
+    @work(group="clipboard", exclusive=True)
+    async def copy_macos_selection(self, text: str) -> None:
+        try:
+            await asyncio.to_thread(
+                subprocess.run, ["/usr/bin/pbcopy"], input=text.encode("utf-8"),
+                stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, check=True, timeout=5,
+            )
+        except (OSError, subprocess.SubprocessError) as error:
+            self.notify(f"클립보드 복사에 실패했습니다: {error}", severity="error")
+        else:
             self.notify("선택한 텍스트를 클립보드에 복사했습니다.", timeout=2)
 
     @on(AgentTable.OpenRelease)
