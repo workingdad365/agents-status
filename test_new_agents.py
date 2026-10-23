@@ -123,10 +123,17 @@ class NewAgentTests(unittest.IsolatedAsyncioTestCase):
         expected = original + ";" + str(self.home / ".qoder/bin/qodercli") + ";" + str(self.home / ".qoder/entry")
         for initial, code, result in ((original, 0, expected), (expected, 0, expected), (original, 7, None)):
             with self.subTest(code=code, already_registered=initial == expected):
-                stub = f"function Invoke-RestMethod {{ '$global:LASTEXITCODE = {code}' }}; "
+                # 정상 환경에서 필수 모듈을 로드한 뒤 검증할 PATH를 주입함.
+                stub = (
+                    "Import-Module Microsoft.PowerShell.Utility; "
+                    "Import-Module Microsoft.PowerShell.Management; "
+                    f"$env:PATH = '{initial.replace(chr(39), chr(39) * 2)}'; "
+                    f"function Invoke-RestMethod {{ '$global:LASTEXITCODE = {code}' }}; "
+                )
                 process = subprocess.run(
-                    (*command.argv[:-1], stub + script), capture_output=True, text=True, errors="replace", timeout=30,
-                    env={"USERPROFILE": str(self.home), "PATH": initial, "SystemRoot": r"C:\Windows"},
+                    (command.argv[0], "-NonInteractive", *command.argv[1:-1], stub + script),
+                    capture_output=True, text=True, errors="replace", timeout=30,
+                    env={**os.environ, "USERPROFILE": str(self.home)},
                 )
                 self.assertEqual(process.returncode, code, process.stderr)
                 if result is None:
