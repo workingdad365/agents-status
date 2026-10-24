@@ -294,7 +294,8 @@ class AgentsStatusApp(App[None]):
     #actions #delete { color: $error; border: round $error; }
     #actions Button:hover, #self-update:hover { border: round $accent; }
     #actions Button:focus, #self-update:focus { border: double $accent; }
-    #actions Button:disabled, #self-update:disabled { border: round $surface; }
+    #actions Button:disabled, #actions #update:disabled, #actions #update-all:disabled,
+    #actions #delete:disabled, #self-update:disabled { border: round $primary; }
     #action-status { height: 1; padding: 0 1; }
     #instructions-source { width: 100%; height: auto; padding: 0 1; content-align: left top; color: $text-muted; }
     #progress { display: none; width: 8; height: 1; }
@@ -313,6 +314,8 @@ class AgentsStatusApp(App[None]):
     def __init__(self, instructions_source: Path | None = None) -> None:
         super().__init__()
         self.statuses: list[AgentStatus] = []
+        self._updated_agents: set[str] = set()
+        self._update_versions: dict[str, str] = {}
         self.busy = False
         self._quitting = False
         self.available_release: Release | None = None
@@ -398,6 +401,14 @@ class AgentsStatusApp(App[None]):
         self._set_buttons(True)
         try:
             self.statuses = await scan_agents()
+            for status in self.statuses:
+                previous = self._update_versions.get(status.spec.key)
+                if (status.status == StatusKind.INSTALLED
+                        and previous not in (None, "", "-", "조회 실패")
+                        and status.version not in ("", "-", "조회 실패")
+                        and status.version != previous):
+                    self._updated_agents.add(status.spec.key)
+            self._update_versions.clear()
             self._render_table()
             self.query_one("#log", RichLog).write("[green]상태 조회를 완료했습니다.[/green]")
         finally:
@@ -415,8 +426,11 @@ class AgentsStatusApp(App[None]):
         }
         for status in sorted(self.statuses, key=lambda item: item.spec.name.casefold()):
             path = str(status.executable) if status.executable else "-"
+            updated = status.status == StatusKind.INSTALLED and status.spec.key in self._updated_agents
+            label = "갱신됨" if updated else status.status
+            color = "cyan" if updated else colors[status.status]
             table.add_row(
-                f"[{colors[status.status]}]{status.status}[/{colors[status.status]}]",
+                f"[{color}]{label}[/{color}]",
                 status.spec.name, status.version, status.provider, path,
                 key=status.spec.key,
             )
@@ -805,6 +819,8 @@ class AgentsStatusApp(App[None]):
                 ))
                 self.notify("OpenClaw 내부 프로세스 검사 오류: 로그를 확인해 주세요.", severity="warning", timeout=10)
 
+        if status.status == StatusKind.INSTALLED:
+            self._update_versions[status.spec.key] = status.version
         result = await run_update(command, on_output=receive_output)
         if result.returncode == 0:
             self.notify(f"{operation}를 완료했습니다.", title=status.spec.name)
