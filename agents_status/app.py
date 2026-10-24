@@ -290,6 +290,7 @@ class AgentsStatusApp(App[None]):
     DataTable { height: 1fr; }
     #actions { height: 3; padding: 0 1; overflow-x: auto; scrollbar-size-horizontal: 0; }
     #actions Button { width: auto; min-width: 0; height: 3; border: round $primary; padding: 0 1; margin-right: 1; }
+    #actions #update { width: 14; }
     #actions #update, #actions #update-all { color: $accent; border: round $accent; }
     #actions #delete { color: $error; border: round $error; }
     #actions Button:hover, #self-update:hover { border: round $accent; }
