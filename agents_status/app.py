@@ -96,15 +96,14 @@ class SelectableRichLog(RichLog):
         if position is None or not self._dragging or not screen._selecting or not self.lines:
             return
         region = self.scrollable_content_region
-        direction = -1 if position.y <= region.y else 1 if position.y >= region.bottom - 1 else 0
-        if not direction:
+        direction_x = -1 if position.x <= region.x else 1 if position.x >= region.right - 1 else 0
+        direction_y = -1 if position.y <= region.y else 1 if position.y >= region.bottom - 1 else 0
+        if not (direction_x or direction_y):
             return
-        previous_y = self.scroll_y
-        self.scroll_relative(y=direction, animate=False, immediate=True)
-        if self.scroll_y == previous_y:
-            return
-        row = min(len(self.lines) - 1, int(self.scroll_y) + (0 if direction < 0 else region.height - 1))
-        column = max(0, min(position.x - region.x, region.width - 1)) + int(self.scroll_x)
+        self.scroll_relative(x=direction_x, y=direction_y, animate=False, immediate=True)
+        row = min(len(self.lines) - 1, int(self.scroll_y) + max(0, min(position.y - region.y, region.height - 1)))
+        # 스크롤 한계에서도 오른쪽 경계 밖으로 드래그하면 마지막 문자까지 선택함.
+        column = max(0, min(position.x - region.x, region.width)) + int(self.scroll_x)
         # Textual의 선택 시작점은 유지하고 스크롤된 문서 좌표로 끝점만 갱신함.
         screen._select_end = (self, position, Offset(_cell_to_index(self.lines[row].text, column), row))
 
