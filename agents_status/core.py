@@ -939,7 +939,7 @@ def uninstall_plan(status: AgentStatus, *, home: Path | None = None) -> tuple[Un
             return UninstallPlan(paths=(dedicated,)), ""
         return UninstallPlan(paths=(executable,)), ""
     if status.spec.key == "hermes":
-        # 공식 설치 스크립트는 <설치 루트>/hermes-agent에 소스와 Python 환경(venv 또는 .hermes)을 둠
+        # 공식 설치 스크립트는 <설치 루트>/hermes-agent에 소스와 진입점(venv 또는 .hermes)을 둠.
         # (기본 루트는 $HERMES_HOME, root FHS 설치는 /usr/local/lib). Unix는 ~/.local/bin에 체크아웃의
         # 진입점을 exec하는 셸 shim hermes·hermes-agent·hermes-acp(구버전은 심볼릭 링크)를 두고,
         # Windows는 bin 런처 또는 venv 진입점을 등록함.
@@ -1070,10 +1070,11 @@ def _hermes_checkout(executable: Path, resolved: Path) -> Path | None:
         and executable.name.lower() in ("hermes.exe", "hermes.cmd")
         and not executable.is_symlink()
     ):
-        # Windows 설치 스크립트는 venv 실행 파일을 bin에 복사하거나 cmd 런처를 생성함.
+        # Windows 설치는 bin과 체크아웃의 .hermes/bin에 런처를 생성하며, 구버전은 venv를 사용함.
         root = executable.parent.parent / "hermes-agent"
         valid_launcher = executable.suffix.lower() == ".cmd" or _is_native_binary(executable, _PE_MAGIC)
-        if valid_launcher and (root / "hermes_cli").is_dir() and (root / "venv/Scripts/hermes.exe").is_file():
+        entrypoints = ("venv/Scripts/hermes.exe", ".hermes/bin/hermes.exe", ".hermes/bin/hermes.cmd")
+        if valid_launcher and (root / "hermes_cli").is_dir() and any((root / path).is_file() for path in entrypoints):
             return root
     target = resolved
     if not executable.is_symlink() and not _is_native_binary(resolved, _PE_MAGIC + _UNIX_MAGIC):

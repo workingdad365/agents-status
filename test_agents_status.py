@@ -1267,15 +1267,20 @@ class UninstallTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_hermes_windows_bin_uninstall_preserves_settings_and_shared_tools(self):
         for location in ("AppData/Local/hermes", "custom hermes"):
-            for launcher in ("hermes.EXE", "hermes.cmd"):
-                with self.subTest(location=location, launcher=launcher), tempfile.TemporaryDirectory() as directory:
+            for launcher, entrypoint in (
+                ("hermes.EXE", "venv/Scripts/hermes.exe"),
+                ("hermes.cmd", "venv/Scripts/hermes.exe"),
+                ("hermes.EXE", ".hermes/bin/hermes.exe"),
+                ("hermes.cmd", ".hermes/bin/hermes.cmd"),
+            ):
+                with self.subTest(location=location, launcher=launcher, entrypoint=entrypoint), tempfile.TemporaryDirectory() as directory:
                     home = Path(directory).resolve()
                     data = home / location
                     root = data / "hermes-agent"
                     (root / "hermes_cli").mkdir(parents=True)
-                    (root / "venv/Scripts").mkdir(parents=True)
-                    target = root / "venv/Scripts/hermes.exe"
-                    target.write_bytes(b"MZ")
+                    target = root / entrypoint
+                    target.parent.mkdir(parents=True)
+                    target.write_bytes(b"MZ" if target.suffix == ".exe" else b"@echo off\n")
                     bin_dir = data / "bin"
                     bin_dir.mkdir()
                     launchers = tuple(bin_dir / name for name in (
