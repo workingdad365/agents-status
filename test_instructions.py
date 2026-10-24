@@ -223,6 +223,8 @@ class SyncAppTests(unittest.IsolatedAsyncioTestCase):
                 await pilot.click("#sync")
                 await app.workers.wait_for_complete()
                 sync.assert_called_once_with(source.resolve(), (SPECS["codex"],))
+                app.query_one("#sync-all").scroll_visible(animate=False)
+                await pilot.pause()
                 await pilot.click("#sync-all")
                 await app.workers.wait_for_complete()
                 self.assertEqual(sync.call_count, 2)
@@ -247,6 +249,8 @@ class SyncAppTests(unittest.IsolatedAsyncioTestCase):
                     await app.workers.wait_for_complete()
                     self.assertEqual((home / ".claude/CLAUDE.md").read_text(encoding="utf-8"), SOURCE)
                     self.assertFalse((home / ".codex/AGENTS.md").exists())
+                    app.query_one("#sync-all").scroll_visible(animate=False)
+                    await pilot.pause()
                     await pilot.click("#sync-all")
                     await app.workers.wait_for_complete()
                     self.assertEqual((home / ".codex/AGENTS.md").read_text(encoding="utf-8"), SOURCE)
@@ -289,6 +293,8 @@ class SyncAppTests(unittest.IsolatedAsyncioTestCase):
             app = AgentsStatusApp()
             async with app.run_test(size=(80, 30)) as pilot:
                 await pilot.pause()
+                app.query_one("#sync-all").scroll_visible(animate=False)
+                await pilot.pause()
                 await pilot.click("#sync-all")
                 await app.workers.wait_for_complete()
                 self.assertFalse(app.busy)
@@ -302,6 +308,8 @@ class SyncAppTests(unittest.IsolatedAsyncioTestCase):
         with patch("agents_status.app.scan_agents", AsyncMock(return_value=self.statuses())), patch("agents_status.app.sync_instructions", return_value=results):
             app = AgentsStatusApp()
             async with app.run_test(size=(80, 30)) as pilot:
+                await pilot.pause()
+                app.query_one("#sync-all").scroll_visible(animate=False)
                 await pilot.pause()
                 await pilot.click("#sync-all")
                 await app.workers.wait_for_complete()

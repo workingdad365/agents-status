@@ -85,6 +85,8 @@ class DefaultsButtonTests(unittest.IsolatedAsyncioTestCase):
             app = AgentsStatusApp()
             async with app.run_test(size=(120, 30)) as pilot:
                 await pilot.pause()
+                app.query_one("#apply-defaults").scroll_visible(animate=False)
+                await pilot.pause()
                 await pilot.click("#apply-defaults")
                 await app.workers.wait_for_complete()
                 apply.assert_called_once_with(tuple(items))

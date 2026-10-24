@@ -283,13 +283,18 @@ class AgentsStatusApp(App[None]):
     Header, Header.-tall { height: 1; }
     Header HeaderClockSpace { display: none; }
     #app-version { dock: right; width: auto; padding: 0 1; content-align: right middle; height: 100%; }
-    #self-update-bar { height: 1; padding: 0 1; }
-    #self-update-status { width: 1fr; color: $text-muted; }
-    #self-update { width: auto; min-width: 0; height: 1; border: none; padding: 0 1; }
+    #self-update-bar { height: 3; padding: 0 1; }
+    #self-update-status { width: 1fr; height: 3; content-align: left middle; color: $text-muted; }
+    #self-update { width: auto; min-width: 0; height: 3; border: round $primary; padding: 0 1; }
     #summary { height: 3; padding: 1 2; background: $boost; }
     DataTable { height: 1fr; }
-    #actions { height: 1; padding: 0 1; overflow-x: auto; scrollbar-size-horizontal: 0; }
-    #actions Button { width: auto; min-width: 0; height: 1; border: none; padding: 0 1; }
+    #actions { height: 3; padding: 0 1; overflow-x: auto; scrollbar-size-horizontal: 0; }
+    #actions Button { width: auto; min-width: 0; height: 3; border: round $primary; padding: 0 1; margin-right: 1; }
+    #actions #update, #actions #update-all { color: $accent; border: round $accent; }
+    #actions #delete { color: $error; border: round $error; }
+    #actions Button:hover, #self-update:hover { border: round $accent; }
+    #actions Button:focus, #self-update:focus { border: double $accent; }
+    #actions Button:disabled, #self-update:disabled { border: round $surface; }
     #action-status { height: 1; padding: 0 1; }
     #instructions-source { width: 100%; height: auto; padding: 0 1; content-align: left top; color: $text-muted; }
     #progress { display: none; width: 8; height: 1; }
@@ -327,8 +332,9 @@ class AgentsStatusApp(App[None]):
         yield AgentTable(id="agents", cursor_type="row", zebra_stripes=True)
         with Horizontal(id="actions"):
             yield Button("새로고침", id="refresh", variant="default")
-            yield Button("업데이트", id="update", variant="primary")
-            yield Button("삭제", id="delete", variant="error")
+            yield Button("업데이트", id="update")
+            yield Button("전체 업데이트", id="update-all")
+            yield Button("삭제", id="delete")
             yield Button("지침 편집", id="edit-instructions")
             yield Button("지침 동기화", id="sync")
             yield Button("지침 전체 동기화", id="sync-all")
@@ -438,6 +444,9 @@ class AgentsStatusApp(App[None]):
         button = self.query_one("#update", Button)
         button.label = operation
         button.disabled = disabled or status is None
+        self.query_one("#update-all", Button).disabled = disabled or not any(
+            item.status == StatusKind.INSTALLED for item in self.statuses
+        )
         self.query_one("#delete", Button).disabled = disabled or status is None or status.status == StatusKind.MISSING
         self.query_one("#sync", Button).disabled = disabled or status is None
         self.query_one("#sync-all", Button).disabled = disabled
@@ -720,6 +729,61 @@ class AgentsStatusApp(App[None]):
     async def update_agent(self, status: AgentStatus, command: UpdateCommand) -> None:
         self.busy = True
         self._set_buttons(True)
+        try:
+            await self._run_agent_update(status, command)
+        finally:
+            self._finish_agent_updates()
+
+    @on(Button.Pressed, "#update-all")
+    def update_all_pressed(self) -> None:
+        if self.busy:
+            return
+        statuses = tuple(sorted(self.statuses, key=lambda item: item.spec.name.casefold()))
+        if not any(item.status == StatusKind.INSTALLED for item in statuses):
+            return
+        self.busy = True
+        self._set_buttons(True)
+        self.update_all_agents(statuses)
+
+    @work(exclusive=True, group="update")
+    async def update_all_agents(self, statuses: tuple[AgentStatus, ...]) -> None:
+        log = self.query_one("#log", RichLog)
+        succeeded = failed = skipped = 0
+        try:
+            for index, status in enumerate(statuses, 1):
+                log.write(Text(f"[{index}/{len(statuses)}] {status.spec.name}"))
+                if status.status != StatusKind.INSTALLED:
+                    skipped += 1
+                    log.write(Text("건너뜀: 설치되지 않은 에이전트"))
+                    continue
+                try:
+                    command, reason = update_command(status)
+                    if command is None:
+                        skipped += 1
+                        log.write(Text(f"건너뜀: {reason}"))
+                        continue
+                    if await self._run_agent_update(status, command):
+                        succeeded += 1
+                    else:
+                        failed += 1
+                except (OSError, ValueError) as error:
+                    failed += 1
+                    log.write(Text(f"{status.spec.name} 업데이트 실패: {error}"))
+            summary = f"전체 업데이트: {succeeded}개 성공, {failed}개 실패, {skipped}개 건너뜀"
+            log.write(Text(summary))
+            self.notify(summary, severity="error" if failed else "information")
+        finally:
+            self._finish_agent_updates()
+
+    def _finish_agent_updates(self) -> None:
+        self.query_one("#progress", LoadingIndicator).styles.display = "none"
+        self.query_one("#activity", Label).update("")
+        self.busy = False
+        self._set_buttons(False)
+        if not self._quitting:
+            self.load_statuses()
+
+    async def _run_agent_update(self, status: AgentStatus, command: UpdateCommand) -> bool:
         log = self.query_one("#log", RichLog)
         operation = "업데이트" if status.status == StatusKind.INSTALLED else "설치"
         log.write(f"[bold]{status.spec.name} {operation}[/bold]: $ {command.display}")
@@ -741,21 +805,14 @@ class AgentsStatusApp(App[None]):
                 ))
                 self.notify("OpenClaw 내부 프로세스 검사 오류: 로그를 확인해 주세요.", severity="warning", timeout=10)
 
-        try:
-            result = await run_update(command, on_output=receive_output)
-            if result.returncode == 0:
-                self.notify(f"{operation}를 완료했습니다.", title=status.spec.name)
-                log.write(f"[green]{operation}를 완료했습니다.[/green]")
-            else:
-                self.notify(f"{operation} 실패(종료 코드 {result.returncode})", title=status.spec.name, severity="error")
-                log.write(f"[red]{operation} 실패(종료 코드 {result.returncode})[/red]")
-        finally:
-            self.query_one("#progress", LoadingIndicator).styles.display = "none"
-            self.query_one("#activity", Label).update("")
-            self.busy = False
-            self._set_buttons(False)
-            if not self._quitting:
-                self.load_statuses()
+        result = await run_update(command, on_output=receive_output)
+        if result.returncode == 0:
+            self.notify(f"{operation}를 완료했습니다.", title=status.spec.name)
+            log.write(f"[green]{operation}를 완료했습니다.[/green]")
+        else:
+            self.notify(f"{operation} 실패(종료 코드 {result.returncode})", title=status.spec.name, severity="error")
+            log.write(f"[red]{operation} 실패(종료 코드 {result.returncode})[/red]")
+        return result.returncode == 0
 
 
 def main() -> None:

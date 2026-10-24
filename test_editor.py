@@ -22,7 +22,7 @@ class EditorTests(unittest.IsolatedAsyncioTestCase):
                 async with app.run_test(size=(120, 30)) as pilot:
                     await pilot.pause()
                     buttons = list(app.query_one("#actions").query(Button))
-                    self.assertEqual([button.id for button in buttons], ["refresh", "update", "delete", "edit-instructions", "sync", "sync-all", "apply-defaults"])
+                    self.assertEqual([button.id for button in buttons], ["refresh", "update", "update-all", "delete", "edit-instructions", "sync", "sync-all", "apply-defaults"])
                     self.assertEqual(len({button.region.y for button in buttons}), 1)
                     with patch.object(app, "suspend", side_effect=nullcontext):
                         await pilot.click("#edit-instructions")
