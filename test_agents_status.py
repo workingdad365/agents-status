@@ -429,6 +429,7 @@ class UpdateTests(unittest.TestCase):
         for key, package in (
             ("claude", "@anthropic-ai/claude-code"), ("opencode", "@opencode/cli"),
             ("opencode", "opencode-ai"), ("pi-bolt", "pi-bolt"), ("codex", "@openai/codex"),
+            ("commandcode", "command-code"),
         ):
             with self.subTest(package=package), tempfile.TemporaryDirectory() as directory:
                 prefix = Path(directory).resolve()
@@ -443,7 +444,7 @@ class UpdateTests(unittest.TestCase):
                 with patch("agents_status.core._which", return_value="different-npm.cmd"):
                     command, reason = update_command(status)
                 self.assertEqual(reason, "")
-                options = (f"--allow-scripts={package}", "--ignore-scripts=false") if key != "codex" else ()
+                options = (f"--allow-scripts={package}", "--ignore-scripts=false") if key not in ("codex", "commandcode") else ()
                 optional = ("--include=optional",) if key == "claude" else ()
                 self.assertEqual(command.argv, (
                     str(npm), "install", "--global", "--prefix", str(prefix),
@@ -520,6 +521,7 @@ class UpdateTests(unittest.TestCase):
     def test_package_updates_follow_symlink_and_original_manager(self):
         for key, package, binary in (
             ("codex", "@openai/codex", "codex"),
+            ("commandcode", "command-code", "command-code"),
             ("crush", "@charmland/crush", "crush"),
             ("pi-bolt", "pi-bolt", "pi-bolt"),
         ):

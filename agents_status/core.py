@@ -1199,10 +1199,11 @@ def update_command(status: AgentStatus, *, home: Path | None = None) -> tuple[Up
         command = _package_update(status.executable, _package_names(spec.key))
         if command:
             return command, ""
-    if spec.key in ("claude", "opencode", "pi-bolt"):
+    if spec.key in ("claude", "commandcode", "opencode", "pi-bolt"):
         names = _package_names(spec.key)
         command = _package_update(status.executable, names)
-        if command and (spec.key == "pi-bolt" or command.argv[1] == "install"):
+        # Command Code는 의존성 로딩 오류로 자체 update도 실패할 수 있으므로 기존 패키지 관리자로 갱신함.
+        if command and (spec.key in ("commandcode", "pi-bolt") or command.argv[1] == "install"):
             if command.argv[1] == "install":
                 package = command.argv[-1].removesuffix("@latest")
                 argv = (*command.argv[:-1], *_npm_install_options(package), command.argv[-1])
