@@ -12,7 +12,7 @@ import tempfile
 import unittest
 import zipfile
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parents[1]
 
 
 @unittest.skipUnless(os.name == "posix" and all(shutil.which(name) for name in ("sh", "unzip", "zipinfo", "curl")), "POSIX 설치 도구 필요")

@@ -35,7 +35,7 @@ class ReleaseTests(unittest.TestCase):
         self.version.write_text('__version__ = "1.0.14"\n')
         (self.repo / "uv.lock").write_text("initial lock\n")
         (self.repo / ".gitignore").write_text("__pycache__/\n")
-        shutil.copy2(Path(__file__).parent / "release.sh", self.repo / "release.sh")
+        shutil.copy2(Path(__file__).resolve().parents[1] / "release.sh", self.repo / "release.sh")
         self.git("add", ".")
         self.git("commit", "-m", "initial")
         self.git("push", "origin", "main")
