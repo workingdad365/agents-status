@@ -105,6 +105,25 @@ def _atomic_write(destination: Path, content: bytes) -> None:
             temporary.unlink(missing_ok=True)
 
 
+def _read_instructions(source: Path) -> tuple[bytes, str]:
+    """지침 원본을 읽고 쓰기 전에 내용을 검증함."""
+    data = source.read_bytes()
+    content = data.decode("utf-8-sig")
+    if not content.strip():
+        raise ValueError("지침 원본이 비어 있음")
+    if MARK_BEGIN in content or MARK_END in content:
+        raise ValueError("지침 원본에 동기화 마커를 포함할 수 없음")
+    return data, content
+
+
+def restore_bundled_instructions() -> Path:
+    """배포 지침으로 사용자 편집본을 덮어쓰고 경로를 반환함."""
+    data, _ = _read_instructions(bundled_instructions_path())
+    destination = user_instructions_path().resolve()
+    _atomic_write(destination, data)
+    return destination
+
+
 def sync_instructions(
     source: Path,
     specs: Sequence[AgentSpec] = AGENTS,
@@ -113,12 +132,7 @@ def sync_instructions(
     env: Mapping[str, str] | None = None,
 ) -> list[SyncResult]:
     """원본을 한 번 읽고 대상별 동기화 결과를 반환함. 원본 오류는 쓰기 전에 발생함."""
-    data = source.read_bytes()
-    content = data.decode("utf-8-sig")
-    if not content.strip():
-        raise ValueError("지침 원본이 비어 있음")
-    if MARK_BEGIN in content or MARK_END in content:
-        raise ValueError("지침 원본에 동기화 마커를 포함할 수 없음")
+    data, content = _read_instructions(source)
     base = Path.home() if home is None else home
     environment = os.environ if env is None else env
     results: list[SyncResult] = []

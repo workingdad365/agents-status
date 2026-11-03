@@ -1,4 +1,5 @@
 import asyncio
+from contextlib import nullcontext
 from pathlib import Path
 import sys
 import tempfile
@@ -6,13 +7,13 @@ import threading
 import unittest
 from unittest.mock import AsyncMock, patch
 
-from textual.widgets import Button, DataTable, LoadingIndicator, RichLog
+from textual.widgets import Button, Checkbox, DataTable, LoadingIndicator, RichLog
 
 from agents_status.app import AgentsStatusApp
 from agents_status.core import AGENTS, AgentStatus, StatusKind
 from agents_status.instructions import (
     MARK_BEGIN, MARK_END, SyncResult, _atomic_write,
-    default_instructions_path, sync_instructions,
+    default_instructions_path, restore_bundled_instructions, sync_instructions,
 )
 
 
@@ -207,6 +208,42 @@ class InstructionsTests(unittest.TestCase):
         self.assertTrue(source.is_file())
         self.assertEqual(source.name, "GLOBAL_INSTRUCTIONS.md")
 
+    def test_restore_bundle_creates_and_overwrites_persistent_user_copy(self):
+        destination = self.home / "config/agents-status/GLOBAL_INSTRUCTIONS.md"
+        data = b"\xef\xbb\xbf" + SOURCE.replace("\n", "\r\n").encode("utf-8")
+        self.source.write_bytes(data)
+        with patch("agents_status.instructions.bundled_instructions_path", return_value=self.source), patch("agents_status.instructions.user_instructions_path", return_value=destination):
+            for existing in (None, "사용자 편집본"):
+                with self.subTest(existing=existing):
+                    if existing is not None:
+                        destination.write_text(existing, encoding="utf-8")
+                    self.assertEqual(restore_bundled_instructions(), destination.resolve())
+                    self.assertEqual(destination.read_bytes(), data)
+                    self.assertEqual(self.source.read_bytes(), data)
+                    self.assertEqual(default_instructions_path(), destination)
+
+    def test_invalid_bundle_preserves_user_copy(self):
+        destination = self.write("config/GLOBAL_INSTRUCTIONS.md", "사용자 편집본")
+        with patch("agents_status.instructions.bundled_instructions_path", return_value=self.source), patch("agents_status.instructions.user_instructions_path", return_value=destination):
+            for data in (b"", b"  \n", b"\xff", MARK_BEGIN.encode(), MARK_END.encode()):
+                with self.subTest(data=data):
+                    self.source.write_bytes(data)
+                    with self.assertRaises((ValueError, UnicodeError)):
+                        restore_bundled_instructions()
+                    self.assertEqual(destination.read_text(encoding="utf-8"), "사용자 편집본")
+            self.source.unlink()
+            with self.assertRaises(FileNotFoundError):
+                restore_bundled_instructions()
+            self.assertEqual(destination.read_text(encoding="utf-8"), "사용자 편집본")
+
+    def test_failed_bundle_restore_preserves_user_copy(self):
+        destination = self.write("config/GLOBAL_INSTRUCTIONS.md", "사용자 편집본")
+        with patch("agents_status.instructions.bundled_instructions_path", return_value=self.source), patch("agents_status.instructions.user_instructions_path", return_value=destination), patch("pathlib.Path.replace", side_effect=PermissionError("접근 거부")):
+            with self.assertRaises(PermissionError):
+                restore_bundled_instructions()
+        self.assertEqual(destination.read_text(encoding="utf-8"), "사용자 편집본")
+        self.assertEqual(list(destination.parent.iterdir()), [destination])
+
 
 class SyncAppTests(unittest.IsolatedAsyncioTestCase):
     def statuses(self):
@@ -214,10 +251,13 @@ class SyncAppTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_selected_and_all_buttons_use_correct_targets(self):
         source = Path("/tmp/custom-instructions.md")
-        with patch("agents_status.app.scan_agents", AsyncMock(return_value=self.statuses())), patch("agents_status.app.sync_instructions", return_value=[]) as sync:
+        with patch("agents_status.app.scan_agents", AsyncMock(return_value=self.statuses())), patch("agents_status.app.sync_instructions", return_value=[]) as sync, patch("agents_status.app.restore_bundled_instructions") as restore:
             app = AgentsStatusApp(source)
             async with app.run_test(size=(80, 30)) as pilot:
                 await pilot.pause()
+                checkbox = app.query_one("#overwrite-instructions", Checkbox)
+                self.assertTrue(checkbox.disabled)
+                checkbox.value = True
                 app.query_one(DataTable).move_cursor(row=1)
                 await pilot.pause()
                 await pilot.click("#sync")
@@ -229,6 +269,90 @@ class SyncAppTests(unittest.IsolatedAsyncioTestCase):
                 await app.workers.wait_for_complete()
                 self.assertEqual(sync.call_count, 2)
                 self.assertEqual(sync.call_args.args, (source.resolve(), AGENTS))
+                restore.assert_not_called()
+                self.assertTrue(checkbox.disabled)
+
+    async def test_checked_sync_replaces_old_copy_and_editor_uses_new_instructions(self):
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory).resolve()
+            bundled = home / "bundled.md"
+            bundled.write_text(SOURCE, encoding="utf-8")
+            edited = home / "edited.md"
+            edited.write_text("사용자 편집본", encoding="utf-8")
+            for key in ("claude", "codex"):
+                (home / SPECS[key].config_root).mkdir()
+
+            def sync(source, specs):
+                return sync_instructions(source, specs, home=home, env={"PATH": ""})
+
+            with patch("agents_status.instructions.bundled_instructions_path", return_value=bundled), patch("agents_status.instructions.user_instructions_path", return_value=edited), patch("agents_status.app.user_instructions_path", return_value=edited), patch("agents_status.app.scan_agents", AsyncMock(return_value=self.statuses())), patch("agents_status.app.sync_instructions", side_effect=sync):
+                app = AgentsStatusApp()
+                async with app.run_test(size=(120, 30)) as pilot:
+                    await pilot.pause()
+                    checkbox = app.query_one("#overwrite-instructions", Checkbox)
+                    self.assertFalse(checkbox.value)
+                    await pilot.click("#sync")
+                    await app.workers.wait_for_complete()
+                    self.assertEqual(edited.read_text(encoding="utf-8"), "사용자 편집본")
+                    self.assertEqual((home / ".claude/CLAUDE.md").read_text(encoding="utf-8"), "사용자 편집본")
+
+                    await pilot.click("#overwrite-instructions")
+                    self.assertTrue(checkbox.value)
+                    for button in ("#sync", "#sync-all"):
+                        with self.subTest(button=button):
+                            edited.write_text("사용자 편집본", encoding="utf-8")
+                            await pilot.click(button)
+                            await app.workers.wait_for_complete()
+                            self.assertEqual(edited.read_bytes(), bundled.read_bytes())
+                            self.assertEqual((home / ".claude/CLAUDE.md").read_text(encoding="utf-8"), SOURCE)
+                    self.assertEqual((home / ".codex/AGENTS.md").read_text(encoding="utf-8"), SOURCE)
+                    self.assertEqual(app.instructions_source, edited)
+                    self.assertEqual(default_instructions_path(), edited)
+                    with patch("agents_status.app.shutil.which", return_value="editor"), patch("agents_status.app.subprocess.run") as run, patch.object(app, "suspend", side_effect=nullcontext):
+                        await pilot.click("#edit-instructions")
+                        run.assert_called_once_with(["editor", str(edited)], check=True)
+                    self.assertIn("배포 지침으로 사용자 편집본 덮어씀", "\n".join(line.text for line in app.query_one(RichLog).lines))
+
+    async def test_checked_sync_switches_bundled_source_to_created_user_copy(self):
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory).resolve()
+            bundled = home / "bundled.md"
+            bundled.write_text(SOURCE, encoding="utf-8")
+            edited = home / "config/GLOBAL_INSTRUCTIONS.md"
+            with patch("agents_status.instructions.bundled_instructions_path", return_value=bundled), patch("agents_status.instructions.user_instructions_path", return_value=edited), patch("agents_status.app.scan_agents", AsyncMock(return_value=[])), patch("agents_status.app.sync_instructions", return_value=[]) as sync:
+                app = AgentsStatusApp()
+                async with app.run_test(size=(120, 30)) as pilot:
+                    await pilot.pause()
+                    self.assertEqual(app.instructions_source, bundled)
+                    await pilot.click("#overwrite-instructions")
+                    await pilot.click("#sync-all")
+                    await app.workers.wait_for_complete()
+                    self.assertEqual(app.instructions_source, edited)
+                    self.assertEqual(edited.read_text(encoding="utf-8"), SOURCE)
+                    sync.assert_called_once_with(edited, AGENTS)
+
+    async def test_invalid_bundle_stops_sync_and_controls_recover(self):
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory).resolve()
+            bundled = home / "bundled.md"
+            bundled.write_bytes(b"")
+            edited = home / "edited.md"
+            edited.write_text("사용자 편집본", encoding="utf-8")
+            with patch("agents_status.instructions.bundled_instructions_path", return_value=bundled), patch("agents_status.instructions.user_instructions_path", return_value=edited), patch("agents_status.app.scan_agents", AsyncMock(return_value=self.statuses())), patch("agents_status.app.sync_instructions") as sync:
+                app = AgentsStatusApp()
+                async with app.run_test(size=(120, 30)) as pilot:
+                    await pilot.pause()
+                    await pilot.click("#overwrite-instructions")
+                    await pilot.click("#sync-all")
+                    await app.workers.wait_for_complete()
+                    sync.assert_not_called()
+                    self.assertEqual(edited.read_text(encoding="utf-8"), "사용자 편집본")
+                    self.assertEqual(app.instructions_source, edited)
+                    self.assertFalse(app.busy)
+                    self.assertFalse(app.query_one("#overwrite-instructions", Checkbox).disabled)
+                    self.assertFalse(app.query_one("#sync-all", Button).disabled)
+                    self.assertEqual(app.query_one(LoadingIndicator).styles.display, "none")
+                    self.assertIn("지침 원본이 비어 있음", "\n".join(line.text for line in app.query_one(RichLog).lines))
 
     async def test_sync_buttons_write_only_to_temporary_home(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -275,6 +399,7 @@ class SyncAppTests(unittest.IsolatedAsyncioTestCase):
                     self.assertTrue(await asyncio.to_thread(started.wait, 2))
                     for button in ("refresh", "update", "delete", "sync", "sync-all"):
                         self.assertTrue(app.query_one(f"#{button}", Button).disabled)
+                    self.assertTrue(app.query_one("#overwrite-instructions", Checkbox).disabled)
                     app.sync_pressed()
                     app.sync_all_pressed()
                     app.action_refresh()
@@ -287,6 +412,7 @@ class SyncAppTests(unittest.IsolatedAsyncioTestCase):
                 await app.workers.wait_for_complete()
                 self.assertFalse(app.busy)
                 self.assertFalse(app.query_one("#sync", Button).disabled)
+                self.assertFalse(app.query_one("#overwrite-instructions", Checkbox).disabled)
 
     async def test_source_error_is_logged_and_controls_recover(self):
         with patch("agents_status.app.scan_agents", AsyncMock(return_value=self.statuses())), patch("agents_status.app.sync_instructions", side_effect=FileNotFoundError("원본 없음")):

@@ -21,7 +21,7 @@ from textual.screen import ModalScreen
 from textual.selection import Selection
 from textual.strip import Strip
 from textual.widget import Widget
-from textual.widgets import Button, DataTable, Footer, Header, Label, LoadingIndicator, RichLog, Static
+from textual.widgets import Button, Checkbox, DataTable, Footer, Header, Label, LoadingIndicator, RichLog, Static
 
 from . import __version__
 from .browser import RELEASE_PAGES, open_release_page
@@ -33,7 +33,10 @@ from .core import (
     AGENTS, AgentSpec, AgentStatus, StatusKind, UpdateCommand, UninstallPlan, config_paths,
     install_command, scan_agents, run_uninstall, run_update, uninstall_plan, update_command,
 )
-from .instructions import bundled_instructions_path, default_instructions_path, sync_instructions, user_instructions_path
+from .instructions import (
+    bundled_instructions_path, default_instructions_path, restore_bundled_instructions,
+    sync_instructions, user_instructions_path,
+)
 from .defaults import apply_defaults
 
 
@@ -297,6 +300,7 @@ class AgentsStatusApp(App[None]):
     #actions Button:disabled, #actions #update:disabled, #actions #update-all:disabled,
     #actions #delete:disabled, #self-update:disabled { border: round $primary; }
     #action-status { height: 1; padding: 0 1; }
+    #overwrite-instructions { height: 1; margin: 0 1; }
     #instructions-source { width: 100%; height: auto; padding: 0 1; content-align: left top; color: $text-muted; }
     #progress { display: none; width: 8; height: 1; }
     #activity { width: 1fr; height: 1; color: $text-muted; }
@@ -342,6 +346,11 @@ class AgentsStatusApp(App[None]):
             yield Button("지침 동기화", id="sync")
             yield Button("지침 전체 동기화", id="sync-all")
             yield Button("기본 설정 적용", id="apply-defaults")
+        yield Checkbox(
+            "동기화 시 배포 지침으로 편집본 덮어쓰기", id="overwrite-instructions",
+            compact=True, disabled=self._custom_instructions_source,
+            tooltip="현재 앱에 포함된 지침으로 사용자 편집본을 교체함. --instructions 사용 시 적용하지 않음.",
+        )
         yield Static(Text(f"공통 지침 위치: {self.instructions_source}", overflow="fold", no_wrap=False), id="instructions-source")
         with Horizontal(id="action-status"):
             yield LoadingIndicator(id="progress")
@@ -466,6 +475,7 @@ class AgentsStatusApp(App[None]):
         self.query_one("#sync-all", Button).disabled = disabled
         self.query_one("#apply-defaults", Button).disabled = disabled
         self.query_one("#edit-instructions", Button).disabled = disabled
+        self.query_one("#overwrite-instructions", Checkbox).disabled = disabled or self._custom_instructions_source
         self.query_one("#self-update", Button).disabled = disabled or self._checking_release
 
     @work(exclusive=True, group="release-check")
@@ -618,10 +628,16 @@ class AgentsStatusApp(App[None]):
     @work(exclusive=True, group="update")
     async def sync_agents(self, specs: tuple[AgentSpec, ...]) -> None:
         log = self.query_one("#log", RichLog)
-        log.write(Text(f"지침 동기화 원본: {self.instructions_source}"))
         self.query_one("#progress", LoadingIndicator).styles.display = "block"
         self.query_one("#activity", Label).update("지침 동기화 진행 중…")
         try:
+            if not self._custom_instructions_source and self.query_one("#overwrite-instructions", Checkbox).value:
+                self.instructions_source = await asyncio.to_thread(restore_bundled_instructions)
+                self.query_one("#instructions-source", Static).update(
+                    Text(f"공통 지침 위치: {self.instructions_source}", overflow="fold", no_wrap=False)
+                )
+                log.write(Text(f"배포 지침으로 사용자 편집본 덮어씀: {self.instructions_source}"))
+            log.write(Text(f"지침 동기화 원본: {self.instructions_source}"))
             results = await asyncio.to_thread(sync_instructions, self.instructions_source, specs)
             for result in results:
                 detail = f" ({result.detail})" if result.detail else ""

@@ -72,6 +72,7 @@ Linux 배포본은 GLIBC 2.28 기반 manylinux 컨테이너에서 생성하고, 
 | 지침 동기화 | 선택한 에이전트에 글로벌 지침 반영 |
 | 지침 편집 | 글로벌 지침 원본을 외부 편집기로 열기 |
 | 전체 동기화 | 지원하는 모든 에이전트에 글로벌 지침 반영 |
+| 동기화 시 배포 지침으로 편집본 덮어쓰기 | 체크 시 배포 지침으로 사용자 편집본을 갱신한 뒤 동기화 |
 | 기본 설정 적용 | 설치된 Command Code·Crush·OpenCode에 누락된 기본 설정 추가 |
 | 앱 업데이트 확인 / 앱 업데이트 | agents-status 자체 업데이트 확인 및 설치 |
 | `R` | 설치 상태와 버전 새로고침 |
@@ -133,6 +134,8 @@ Command Code의 패키지 설치본은 기존 npm/Bun/Homebrew로 업데이트�
 기본 원본은 앱에 포함된 `GLOBAL_INSTRUCTIONS.md`이며, 사용 중인 원본 경로는 화면과 로그에 표시함. `지침 편집`은 Linux·macOS에서 nano, vi 순으로, Windows에서 edit, notepad 순으로 설치된 편집기를 사용함. 저장 후 편집기를 종료하면 앱으로 돌아오며, `지침 동기화` 또는 `지침 전체 동기화`로 반영함.
 
 기본 원본을 처음 편집할 때 사용자 편집본을 생성하고 이후 실행에서도 우선 사용함. Linux는 `$XDG_CONFIG_HOME/agents-status/GLOBAL_INSTRUCTIONS.md`(기본 `~/.config`), macOS는 `~/Library/Application Support/agents-status/GLOBAL_INSTRUCTIONS.md`, Windows는 `%APPDATA%\agents-status\GLOBAL_INSTRUCTIONS.md`에 보관하므로 앱 업데이트 후에도 유지됨. `--instructions`로 지정한 파일은 해당 파일을 직접 편집함. 별도 파일을 사용하려면 실행 시 지정함.
+
+앱 업데이트로 배포 지침이 변경된 경우 `동기화 시 배포 지침으로 편집본 덮어쓰기`를 체크한 뒤 `지침 동기화` 또는 `지침 전체 동기화`를 실행함. 현재 앱에 포함된 지침으로 사용자 편집본을 덮어쓰고 해당 내용을 에이전트에 반영함. 이후 `지침 편집`에서도 갱신된 내용을 표시함. 체크만으로는 파일을 변경하지 않으며 기본값은 해제 상태임. 체크 상태는 앱 종료 시 초기화되고, 체크를 유지하면 동기화할 때마다 배포 지침으로 다시 덮어씀. `--instructions`로 원본을 지정한 경우 체크박스는 비활성화됨.
 
 ```bash
 agents-status --instructions /path/to/GLOBAL_INSTRUCTIONS.md
