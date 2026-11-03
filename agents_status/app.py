@@ -15,6 +15,7 @@ from textual import events, on, work
 from textual.app import App, ComposeResult, SuspendNotSupported
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
+from textual.content import Content
 from textual.geometry import Offset
 from textual.message import Message
 from textual.screen import ModalScreen
@@ -48,6 +49,23 @@ def _cell_to_index(text: str, cell: int) -> int:
             return index
         width += get_character_cell_size(character)
     return len(text)
+
+
+class CheckmarkCheckbox(Checkbox):
+    """선명한 테두리와 체크 기호로 선택 상태를 표시함."""
+
+    BUTTON_LEFT = "["
+    BUTTON_INNER = "\u2713"
+    BUTTON_RIGHT = "]"
+
+    @property
+    def _button(self) -> Content:
+        border_style = self.get_visual_style("toggle--label")
+        return Content.assemble(
+            (self.BUTTON_LEFT, border_style),
+            (self.BUTTON_INNER if self.value else " ", self.get_visual_style("toggle--button")),
+            (self.BUTTON_RIGHT, border_style),
+        )
 
 
 class AgentTable(DataTable):
@@ -346,7 +364,7 @@ class AgentsStatusApp(App[None]):
             yield Button("지침 동기화", id="sync")
             yield Button("지침 전체 동기화", id="sync-all")
             yield Button("기본 설정 적용", id="apply-defaults")
-        yield Checkbox(
+        yield CheckmarkCheckbox(
             "동기화 시 배포 지침으로 편집본 덮어쓰기", id="overwrite-instructions",
             compact=True, disabled=self._custom_instructions_source,
             tooltip="현재 앱에 포함된 지침으로 사용자 편집본을 교체함. --instructions 사용 시 적용하지 않음.",
