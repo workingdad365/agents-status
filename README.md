@@ -133,9 +133,9 @@ Command Code의 패키지 설치본은 기존 npm/Bun/Homebrew로 업데이트�
 
 기본 원본은 앱에 포함된 `GLOBAL_INSTRUCTIONS.md`이며, 사용 중인 원본 경로는 화면과 로그에 표시함. `지침 편집`은 Linux·macOS에서 nano, vi 순으로, Windows에서 edit, notepad 순으로 설치된 편집기를 사용함. 저장 후 편집기를 종료하면 앱으로 돌아오며, `지침 동기화` 또는 `지침 전체 동기화`로 반영함.
 
-기본 원본을 처음 편집할 때 사용자 편집본을 생성하고 이후 실행에서도 우선 사용함. Linux는 `$XDG_CONFIG_HOME/agents-status/GLOBAL_INSTRUCTIONS.md`(기본 `~/.config`), macOS는 `~/Library/Application Support/agents-status/GLOBAL_INSTRUCTIONS.md`, Windows는 `%APPDATA%\agents-status\GLOBAL_INSTRUCTIONS.md`에 보관하므로 앱 업데이트 후에도 유지됨. `--instructions`로 지정한 파일은 해당 파일을 직접 편집함. 별도 파일을 사용하려면 실행 시 지정함.
+기본 원본을 편집할 때 사용자 사본과 복사 당시의 내용 해시(`GLOBAL_INSTRUCTIONS.base.sha256`)를 생성함. 실제로 내용을 수정한 편집본만 이후 실행에서도 우선 사용함. 단순히 열었다 닫거나 같은 내용으로 저장한 경우에는 앱 업데이트 후에도 새 배포 지침을 자동 선택함. BOM과 줄바꿈 형식만 달라진 경우도 미수정으로 취급함. 이전 버전에서 만든 사본도 과거 배포 원문과 내용이 일치하면 새 배포 지침을 사용함. 에이전트에 적용하려면 지침 동기화를 실행해야 함.
 
-앱 업데이트로 배포 지침이 변경된 경우 `동기화 시 배포 지침으로 편집본 덮어쓰기`를 체크한 뒤 `지침 동기화` 또는 `지침 전체 동기화`를 실행함. 현재 앱에 포함된 지침으로 사용자 편집본을 덮어쓰고 해당 내용을 에이전트에 반영함. 이후 `지침 편집`에서도 갱신된 내용을 표시함. 체크만으로는 파일을 변경하지 않으며 기본값은 해제 상태임. 체크 상태는 앱 종료 시 초기화되고, 체크를 유지하면 동기화할 때마다 배포 지침으로 다시 덮어씀. `--instructions`로 원본을 지정한 경우 체크박스는 비활성화됨.
+사용자 편집본은 Linux의 `$XDG_CONFIG_HOME/agents-status/GLOBAL_INSTRUCTIONS.md`(기본 `~/.config`), macOS의 `~/Library/Application Support/agents-status/GLOBAL_INSTRUCTIONS.md`, Windows의 `%APPDATA%\agents-status\GLOBAL_INSTRUCTIONS.md`에 보관함. 직접 수정한 내용은 앱 업데이트 후에도 유지함. `--instructions`로 지정한 파일은 해당 파일을 직접 편집하고 동기화함. 별도 파일을 사용하려면 실행 시 지정함.
 
 ```bash
 agents-status --instructions /path/to/GLOBAL_INSTRUCTIONS.md
@@ -144,6 +144,8 @@ agents-status --instructions /path/to/GLOBAL_INSTRUCTIONS.md
 ```powershell
 agents-status --instructions C:\path\to\GLOBAL_INSTRUCTIONS.md
 ```
+
+사용자 수정본을 배포 지침으로 되돌리려면 `동기화 시 배포 지침으로 편집본 덮어쓰기`를 체크한 뒤 `지침 동기화` 또는 `지침 전체 동기화`를 실행함. 편집본을 현재 배포 지침으로 덮어쓰고 기준 해시도 갱신하므로, 이후 직접 수정하지 않으면 다음 배포 지침도 자동 선택함. 체크만으로는 파일을 변경하지 않으며 기본값은 해제 상태임. 체크 상태는 앱 종료 시 초기화되고, 체크를 유지하면 동기화할 때마다 배포 지침으로 다시 덮어씀. `--instructions`로 원본을 지정한 경우 체크박스는 비활성화됨.
 
 동기화 버튼을 누르면 즉시 반영함. **덮어쓰기 대상 파일에 별도 내용을 작성했다면 먼저 백업 필요.**
 

@@ -5,19 +5,19 @@ import tempfile
 import unittest
 from unittest.mock import AsyncMock, patch
 
-from textual.widgets import Button
+from textual.widgets import Button, RichLog
 
 from agents_status.app import AgentsStatusApp
 from agents_status.instructions import default_instructions_path
 
 
 class EditorTests(unittest.IsolatedAsyncioTestCase):
-    async def test_default_copy_is_persistent_and_buttons_share_one_row(self):
+    async def test_unchanged_edits_follow_bundle_and_buttons_share_one_row(self):
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory).resolve() / "bundled.md"
-            source.write_text("original", encoding="utf-8")
+            source.write_text("original\n", encoding="utf-8")
             destination = Path(directory).resolve() / "config/GLOBAL_INSTRUCTIONS.md"
-            with patch("agents_status.app.scan_agents", AsyncMock(return_value=[])), patch("agents_status.app.default_instructions_path", return_value=source), patch("agents_status.app.user_instructions_path", return_value=destination), patch("agents_status.app.shutil.which", return_value="/usr/bin/nano"), patch("agents_status.app.subprocess.run") as run:
+            with patch("agents_status.app.scan_agents", AsyncMock(return_value=[])), patch("agents_status.instructions.bundled_instructions_path", return_value=source), patch("agents_status.instructions.user_instructions_path", return_value=destination), patch("agents_status.app.user_instructions_path", return_value=destination), patch("agents_status.app.shutil.which", return_value="/usr/bin/nano"), patch("agents_status.app.subprocess.run") as run:
                 app = AgentsStatusApp()
                 async with app.run_test(size=(120, 30)) as pilot:
                     await pilot.pause()
@@ -27,14 +27,62 @@ class EditorTests(unittest.IsolatedAsyncioTestCase):
                     with patch.object(app, "suspend", side_effect=nullcontext):
                         await pilot.click("#edit-instructions")
                         run.assert_called_once_with(["/usr/bin/nano", str(destination)], check=True)
-                        self.assertEqual(destination.read_text(), "original")
-                        destination.write_text("edited", encoding="utf-8")
+                        self.assertEqual(destination.read_text(), "original\n")
+                        self.assertEqual(app.instructions_source, source)
+                        run.side_effect = lambda *args, **kwargs: destination.write_bytes(b"\xef\xbb\xbforiginal\r\n")
                         app.edit_instructions_pressed()
-                    self.assertEqual(source.read_text(), "original")
+                        self.assertEqual(app.instructions_source, source)
+                        self.assertIn("변경된 내용 없음", "\n".join(line.text for line in app.query_one(RichLog).lines))
+                        source.write_text("updated\n", encoding="utf-8")
+                        run.side_effect = None
+                        app.edit_instructions_pressed()
+                    self.assertEqual(destination.read_text(), "updated\n")
+                    self.assertEqual(app.instructions_source, source)
+                    self.assertEqual(AgentsStatusApp().instructions_source, source)
+
+    async def test_real_edits_remain_overrides_after_bundle_update_and_noop(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory).resolve() / "bundled.md"
+            source.write_text("original", encoding="utf-8")
+            destination = Path(directory).resolve() / "config/GLOBAL_INSTRUCTIONS.md"
+            with patch("agents_status.app.scan_agents", AsyncMock(return_value=[])), patch("agents_status.instructions.bundled_instructions_path", return_value=source), patch("agents_status.instructions.user_instructions_path", return_value=destination), patch("agents_status.app.user_instructions_path", return_value=destination), patch("agents_status.app.shutil.which", return_value="editor"), patch("agents_status.app.subprocess.run", side_effect=lambda *args, **kwargs: destination.write_text("edited", encoding="utf-8")) as run:
+                app = AgentsStatusApp()
+                async with app.run_test(size=(120, 30)) as pilot:
+                    await pilot.pause()
+                    with patch.object(app, "suspend", side_effect=nullcontext):
+                        await pilot.click("#edit-instructions")
+                        self.assertEqual(app.instructions_source, destination)
+                        self.assertIn("지침 내용이 변경됨", "\n".join(line.text for line in app.query_one(RichLog).lines))
+                        source.write_text("updated", encoding="utf-8")
+                        run.side_effect = None
+                        app.edit_instructions_pressed()
                     self.assertEqual(destination.read_text(), "edited")
                     self.assertEqual(app.instructions_source, destination)
-                    with patch("agents_status.instructions.user_instructions_path", return_value=destination):
-                        self.assertEqual(default_instructions_path(), destination)
+                    self.assertEqual(default_instructions_path(), destination)
+                    self.assertEqual(AgentsStatusApp().instructions_source, destination)
+
+    async def test_failed_editor_preserves_saved_edits_and_ignores_unchanged_copy(self):
+        for save in (False, True):
+            with self.subTest(save=save), tempfile.TemporaryDirectory() as directory:
+                source = Path(directory).resolve() / "bundled.md"
+                source.write_text("original", encoding="utf-8")
+                destination = Path(directory).resolve() / "config/GLOBAL_INSTRUCTIONS.md"
+
+                def edit(*args, **kwargs):
+                    if save:
+                        destination.write_text("edited", encoding="utf-8")
+                    raise subprocess.CalledProcessError(1, "editor")
+
+                with patch("agents_status.app.scan_agents", AsyncMock(return_value=[])), patch("agents_status.instructions.bundled_instructions_path", return_value=source), patch("agents_status.instructions.user_instructions_path", return_value=destination), patch("agents_status.app.user_instructions_path", return_value=destination), patch("agents_status.app.shutil.which", return_value="editor"), patch("agents_status.app.subprocess.run", side_effect=edit):
+                    app = AgentsStatusApp()
+                    async with app.run_test(size=(120, 30)) as pilot:
+                        await pilot.pause()
+                        with patch.object(app, "suspend", side_effect=nullcontext), patch.object(app, "notify") as notify:
+                            await pilot.click("#edit-instructions")
+                        self.assertEqual(notify.call_args.kwargs["severity"], "error")
+                        self.assertEqual(app.instructions_source, destination if save else source)
+                        self.assertEqual(destination.read_text(), "edited" if save else "original")
+                        self.assertFalse(app.busy)
 
     async def test_explicit_source_windows_editor_failure_and_busy(self):
         with tempfile.TemporaryDirectory() as directory:

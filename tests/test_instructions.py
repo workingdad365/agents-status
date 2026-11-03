@@ -220,7 +220,7 @@ class InstructionsTests(unittest.TestCase):
                     self.assertEqual(restore_bundled_instructions(), destination.resolve())
                     self.assertEqual(destination.read_bytes(), data)
                     self.assertEqual(self.source.read_bytes(), data)
-                    self.assertEqual(default_instructions_path(), destination)
+                    self.assertEqual(default_instructions_path(), self.source)
 
     def test_invalid_bundle_preserves_user_copy(self):
         destination = self.write("config/GLOBAL_INSTRUCTIONS.md", "사용자 편집본")
@@ -306,14 +306,21 @@ class SyncAppTests(unittest.IsolatedAsyncioTestCase):
                             self.assertEqual(edited.read_bytes(), bundled.read_bytes())
                             self.assertEqual((home / ".claude/CLAUDE.md").read_text(encoding="utf-8"), SOURCE)
                     self.assertEqual((home / ".codex/AGENTS.md").read_text(encoding="utf-8"), SOURCE)
-                    self.assertEqual(app.instructions_source, edited)
-                    self.assertEqual(default_instructions_path(), edited)
+                    self.assertEqual(app.instructions_source, bundled)
+                    self.assertEqual(default_instructions_path(), bundled)
                     with patch("agents_status.app.shutil.which", return_value="editor"), patch("agents_status.app.subprocess.run") as run, patch.object(app, "suspend", side_effect=nullcontext):
                         await pilot.click("#edit-instructions")
                         run.assert_called_once_with(["editor", str(edited)], check=True)
+                    checkbox.value = False
+                    bundled.write_text(SOURCE + "새 배포 내용\n", encoding="utf-8")
+                    await pilot.click("#sync-all")
+                    await app.workers.wait_for_complete()
+                    self.assertEqual((home / ".codex/AGENTS.md").read_bytes(), bundled.read_bytes())
+                    self.assertEqual(edited.read_text(encoding="utf-8"), SOURCE)
+                    self.assertEqual(AgentsStatusApp().instructions_source, bundled)
                     self.assertIn("배포 지침으로 사용자 편집본 덮어씀", "\n".join(line.text for line in app.query_one(RichLog).lines))
 
-    async def test_checked_sync_switches_bundled_source_to_created_user_copy(self):
+    async def test_checked_sync_creates_user_copy_and_keeps_following_bundle(self):
         with tempfile.TemporaryDirectory() as directory:
             home = Path(directory).resolve()
             bundled = home / "bundled.md"
@@ -327,9 +334,9 @@ class SyncAppTests(unittest.IsolatedAsyncioTestCase):
                     await pilot.click("#overwrite-instructions")
                     await pilot.click("#sync-all")
                     await app.workers.wait_for_complete()
-                    self.assertEqual(app.instructions_source, edited)
+                    self.assertEqual(app.instructions_source, bundled)
                     self.assertEqual(edited.read_text(encoding="utf-8"), SOURCE)
-                    sync.assert_called_once_with(edited, AGENTS)
+                    sync.assert_called_once_with(bundled, AGENTS)
 
     async def test_invalid_bundle_stops_sync_and_controls_recover(self):
         with tempfile.TemporaryDirectory() as directory:

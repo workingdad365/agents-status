@@ -34,8 +34,8 @@ from .core import (
     install_command, scan_agents, run_uninstall, run_update, uninstall_plan, update_command,
 )
 from .instructions import (
-    bundled_instructions_path, default_instructions_path, restore_bundled_instructions,
-    sync_instructions, user_instructions_path,
+    bundled_instructions_path, default_instructions_path, instructions_fingerprint,
+    restore_bundled_instructions, sync_instructions, user_instructions_path,
 )
 from .defaults import apply_defaults
 
@@ -553,6 +553,12 @@ class AgentsStatusApp(App[None]):
         if not self.busy:
             self._start_sync(AGENTS)
 
+    def _set_instructions_source(self, source: Path) -> None:
+        self.instructions_source = source.expanduser().resolve()
+        self.query_one("#instructions-source", Static).update(
+            Text(f"공통 지침 위치: {self.instructions_source}", overflow="fold", no_wrap=False)
+        )
+
     @on(Button.Pressed, "#edit-instructions")
     def edit_instructions_pressed(self) -> None:
         if self.busy:
@@ -565,31 +571,35 @@ class AgentsStatusApp(App[None]):
         self.busy = True
         self._set_buttons(True)
         error_message = ""
+        changed = False
         try:
             if not self._custom_instructions_source:
-                destination = user_instructions_path()
-                destination.parent.mkdir(parents=True, exist_ok=True)
-                if not destination.exists():
-                    content = self.instructions_source.read_bytes()
-                    with destination.open("xb") as stream:
-                        stream.write(content)
-                self.instructions_source = destination.resolve()
-                self.query_one("#instructions-source", Static).update(Text(f"공통 지침 위치: {self.instructions_source}"))
+                source = default_instructions_path().expanduser().resolve()
+                destination = user_instructions_path().resolve()
+                if source != destination:
+                    destination = restore_bundled_instructions()
+                self._set_instructions_source(destination)
+            before = instructions_fingerprint(self.instructions_source.read_bytes())
             with self.suspend():
                 # 오류도 suspend 블록 안에서 처리하여 터미널 복구를 보장함.
                 try:
                     subprocess.run([editor, str(self.instructions_source)], check=True)
                 except (OSError, subprocess.SubprocessError) as error:
                     error_message = str(error)
-        except (OSError, SuspendNotSupported) as error:
+            changed = before != instructions_fingerprint(self.instructions_source.read_bytes())
+            if not self._custom_instructions_source:
+                self._set_instructions_source(default_instructions_path())
+        except (OSError, UnicodeError, ValueError, SuspendNotSupported) as error:
             error_message = str(error)
         finally:
             self.busy = False
             self._set_buttons(False)
         if error_message:
-            self.notify(f"지침 편집기를 실행하지 못했습니다: {error_message}", severity="error")
+            self.notify(f"지침 편집 처리 실패: {error_message}", severity="error")
+        elif changed:
+            self.query_one("#log", RichLog).write("지침 내용이 변경됨. 저장한 내용을 적용하려면 지침 동기화 실행 필요.")
         else:
-            self.query_one("#log", RichLog).write("지침 편집기를 닫았습니다. 저장한 내용을 적용하려면 지침 동기화를 실행하세요.")
+            self.query_one("#log", RichLog).write("지침 편집기를 닫음. 변경된 내용 없음.")
 
     @on(Button.Pressed, "#apply-defaults")
     def defaults_pressed(self) -> None:
@@ -631,12 +641,11 @@ class AgentsStatusApp(App[None]):
         self.query_one("#progress", LoadingIndicator).styles.display = "block"
         self.query_one("#activity", Label).update("지침 동기화 진행 중…")
         try:
-            if not self._custom_instructions_source and self.query_one("#overwrite-instructions", Checkbox).value:
-                self.instructions_source = await asyncio.to_thread(restore_bundled_instructions)
-                self.query_one("#instructions-source", Static).update(
-                    Text(f"공통 지침 위치: {self.instructions_source}", overflow="fold", no_wrap=False)
-                )
-                log.write(Text(f"배포 지침으로 사용자 편집본 덮어씀: {self.instructions_source}"))
+            if not self._custom_instructions_source:
+                if self.query_one("#overwrite-instructions", Checkbox).value:
+                    destination = await asyncio.to_thread(restore_bundled_instructions)
+                    log.write(Text(f"배포 지침으로 사용자 편집본 덮어씀: {destination}"))
+                self._set_instructions_source(await asyncio.to_thread(default_instructions_path))
             log.write(Text(f"지침 동기화 원본: {self.instructions_source}"))
             results = await asyncio.to_thread(sync_instructions, self.instructions_source, specs)
             for result in results:
