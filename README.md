@@ -201,7 +201,7 @@ uv run python -m unittest -v
 
 ### 최초 1회 설정
 
-Bash·Git·uv·GitHub CLI가 필요하며, `gh auth login`으로 로그인함. 공개 배포 저장소 `workingdad365/agents-status-releases`에만 **Contents: Read and write** 권한을 가진 fine-grained 토큰을 발급하고 비공개 소스 저장소에 등록함.
+Git, uv, GitHub CLI와 Bash 또는 PowerShell 5.1 이상이 필요하며, `gh auth login`으로 로그인함. 공개 배포 저장소 `workingdad365/agents-status-releases`에만 **Contents: Read and write** 권한을 가진 fine-grained 토큰을 발급하고 비공개 소스 저장소에 등록함.
 
 ```bash
 gh secret set RELEASE_TOKEN --repo workingdad365/agents-status
@@ -213,11 +213,19 @@ gh secret set RELEASE_TOKEN --repo workingdad365/agents-status
 
 `main`에서 배포할 기능·문서 변경을 먼저 커밋한 뒤 실행함. 미커밋 변경이 있으면 배포하지 않음.
 
+Linux / WSL2 / macOS의 Bash에서 실행함.
+
 ```bash
 ./release.sh
 ```
 
-스크립트가 다음 절차를 자동 수행함.
+Windows PowerShell 5.1 또는 PowerShell 7에서 실행함.
+
+```powershell
+.\release.ps1
+```
+
+두 스크립트는 인자 없이 실행하며 다음 절차를 자동 수행함.
 
 1. 로그인·배포 토큰 등록·원격 브랜치 상태 확인.
 2. 패치 버전 증가: `1.0.14` → `1.0.15`. 버전·태그 번호를 직접 입력할 필요 없음.
@@ -233,6 +241,6 @@ gh secret set RELEASE_TOKEN --repo workingdad365/agents-status
 
 - **커밋 전 검증 실패:** 버전·잠금 파일을 실행 전 상태로 복구함. 원인을 수정하고 커밋한 뒤 다시 실행함.
 - **커밋 후 푸시 실패:** 릴리스 커밋과 생성된 태그를 보존함. 오류 안내의 태그를 확인하고 `git push --atomic origin main <해당 태그>`로 푸시를 재개함. 태그 생성 자체가 실패했다면 먼저 해당 커밋에 태그를 생성함.
-- **CI 또는 게시 실패:** [Release Actions](https://github.com/workingdad365/agents-status/actions/workflows/release.yml)에서 해당 실행의 오류 확인. 권한 문제만 수정했다면 실패 작업을 재실행할 수 있음. 코드·테스트 수정이 필요하면 수정·커밋 후 `./release.sh`로 다음 버전을 배포함. 기존 실행을 재시도하면 같은 태그의 이전 코드를 사용하므로 새 수정 사항은 반영되지 않음.
+- **CI 또는 게시 실패:** [Release Actions](https://github.com/workingdad365/agents-status/actions/workflows/release.yml)에서 해당 실행의 오류 확인. 권한 문제만 수정했다면 실패 작업을 재실행할 수 있음. 코드나 테스트 수정이 필요하면 수정 후 커밋하고 `./release.sh` 또는 `.\release.ps1`로 다음 버전을 배포함. 기존 실행을 재시도하면 같은 태그의 이전 코드를 사용하므로 새 수정 사항은 반영되지 않음.
 
 커밋 후 실패했을 때 무작정 스크립트를 다시 실행하면 버전이 한 번 더 증가하므로 기존 배포 상태를 먼저 확인함. 수동 태그 생성이나 버전 파일 수정은 일반 배포 절차에 필요 없음.

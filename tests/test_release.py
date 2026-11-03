@@ -9,33 +9,33 @@ import tempfile
 import unittest
 
 
-@unittest.skipUnless(os.name != "nt" and shutil.which("bash") and shutil.which("git"), "POSIX Bash/Git 필요")
-class ReleaseTests(unittest.TestCase):
+class ReleaseChecks:
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name).resolve()
-        self.repo = self.root / "source"
+        self.repo = self.root / "source with spaces"
         self.repo.mkdir()
         self.remote = self.root / "remote.git"
         self.tools = self.root / "tools"
         self.tools.mkdir()
         self.env = {**os.environ, "PATH": f"{self.tools}{os.pathsep}{os.environ['PATH']}",
                     "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull,
-                    "PYTHONDONTWRITEBYTECODE": "1"}
+                    "PYTHONDONTWRITEBYTECODE": "1", "PYTHONUTF8": "1"}
         self.git("init", "--bare", str(self.remote))
         self.git("init", "-b", "main")
         self.git("config", "user.name", "Release Test")
         self.git("config", "user.email", "release@example.invalid")
         self.git("config", "commit.gpgsign", "false")
         self.git("config", "tag.gpgsign", "false")
+        self.git("config", "core.autocrlf", "false")
         self.git("remote", "add", "origin", str(self.remote))
         (self.repo / "agents_status").mkdir()
         self.version = self.repo / "agents_status/__init__.py"
         self.version.write_text('__version__ = "1.0.14"\n')
         (self.repo / "uv.lock").write_text("initial lock\n")
         (self.repo / ".gitignore").write_text("__pycache__/\n")
-        shutil.copy2(Path(__file__).resolve().parents[1] / "release.sh", self.repo / "release.sh")
+        shutil.copy2(Path(__file__).resolve().parents[1] / self.script, self.repo / self.script)
         self.git("add", ".")
         self.git("commit", "-m", "initial")
         self.git("push", "origin", "main")
@@ -45,7 +45,7 @@ args = sys.argv[1:]
 if args[0] in ("sync", "lock"):
     if args[0] == "lock":
         pathlib.Path("uv.lock").write_text("updated lock\\n")
-    sys.exit(0)
+    sys.exit(int(os.environ.get("FAIL_" + args[0].upper(), "0")))
 args = args[2:]
 if args[:3] == ["python", "-m", "unittest"]:
     sys.exit(int(os.environ.get("FAIL_TESTS", "0")))
@@ -60,15 +60,15 @@ sys.exit(91)
         self.executable("gh", '''import json, os, sys
 args = sys.argv[1:]
 if args[:2] == ["auth", "status"]:
-    sys.exit(0)
+    sys.exit(int(os.environ.get("FAIL_AUTH", "0")))
 if args[:2] == ["repo", "view"]:
     print("workingdad365/agents-status")
 elif args[:2] == ["secret", "list"]:
-    print("true")
+    print("RELEASE_TOKEN" if args[-1] == ".[].name" else "true")
 elif args[:2] == ["run", "list"]:
     print("123")
 elif args[:2] == ["run", "watch"]:
-    sys.exit(0)
+    sys.exit(int(os.environ.get("FAIL_CI", "0")))
 elif args[:2] == ["release", "view"]:
     tag = args[2]
     names = [f"agents-status-{tag[1:]}-{target}.zip" for target in
@@ -76,7 +76,8 @@ elif args[:2] == ["release", "view"]:
     names += ["install.sh", "install.ps1", "SHA256SUMS"]
     if os.environ.get("INCOMPLETE_RELEASE"):
         names.pop()
-    print(json.dumps({"tagName": tag, "isDraft": False, "isPrerelease": False,
+    print(json.dumps({"tagName": tag, "isDraft": bool(os.environ.get("DRAFT_RELEASE")),
+                      "isPrerelease": bool(os.environ.get("PRERELEASE")),
                       "assets": [{"name": name} for name in names],
                       "url": "https://example.invalid/releases/" + tag}))
 else:
@@ -89,13 +90,19 @@ else:
 
     def executable(self, name, body):
         path = self.tools / name
-        path.write_text(f"#!{sys.executable}\n" + body)
-        path.chmod(0o755)
+        if os.name == "nt":
+            path.with_suffix(".py").write_text(body, encoding="utf-8")
+            path.with_suffix(".cmd").write_text(
+                f'@echo off\n"{sys.executable}" "%~dp0{name}.py" %*\nexit /b %errorlevel%\n'
+            )
+        else:
+            path.write_text(f"#!{sys.executable}\n" + body)
+            path.chmod(0o755)
 
-    def run_release(self, **environment):
-        return subprocess.run(["bash", str(self.repo / "release.sh")], cwd=self.root,
+    def run_release(self, *args, **environment):
+        return subprocess.run([*self.runner, str(self.repo / self.script), *args], cwd=self.root,
                               env={**self.env, **environment}, text=True,
-                              capture_output=True, timeout=30)
+                              encoding="utf-8", errors="replace", capture_output=True, timeout=60)
 
     def remote_head(self):
         return self.git("--git-dir", str(self.remote), "rev-parse", "refs/heads/main").stdout.strip()
@@ -127,6 +134,47 @@ else:
         self.assertEqual(self.remote_head(), self.initial)
         self.assertEqual(self.git("rev-parse", "HEAD").stdout.strip(), self.initial)
 
+    def test_argument_or_non_main_branch_does_not_publish(self):
+        result = self.run_release("1.2.3")
+        self.assertNotEqual(result.returncode, 0)
+        self.git("checkout", "-b", "feature")
+        result = self.run_release()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(self.version.read_text(), '__version__ = "1.0.14"\n')
+        self.assertEqual(self.remote_head(), self.initial)
+
+    def test_native_command_failures_stop_without_commit_or_remote_change(self):
+        original = self.version.read_bytes()
+        lock = (self.repo / "uv.lock").read_bytes()
+        for variable in ("FAIL_AUTH", "FAIL_SYNC", "FAIL_LOCK"):
+            with self.subTest(variable=variable):
+                result = self.run_release(**{variable: "1"})
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(self.version.read_bytes(), original)
+                self.assertEqual((self.repo / "uv.lock").read_bytes(), lock)
+                self.assertEqual(self.git("status", "--porcelain").stdout, "")
+                self.assertEqual(self.git("rev-parse", "HEAD").stdout.strip(), self.initial)
+                self.assertEqual(self.remote_head(), self.initial)
+
+    def test_remote_ahead_requires_update_before_release(self):
+        self.git("commit", "--allow-empty", "-m", "remote change")
+        self.git("push", "origin", "main")
+        remote = self.remote_head()
+        self.git("reset", "--hard", self.initial)
+        result = self.run_release()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(self.version.read_text(), '__version__ = "1.0.14"\n')
+        self.assertEqual(self.remote_head(), remote)
+        self.assertEqual(self.git("rev-parse", "HEAD").stdout.strip(), self.initial)
+
+    def test_existing_local_tag_is_not_replaced(self):
+        self.git("tag", "v1.0.15")
+        result = self.run_release()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(self.version.read_text(), '__version__ = "1.0.14"\n')
+        self.assertEqual(self.git("rev-parse", "v1.0.15").stdout.strip(), self.initial)
+        self.assertEqual(self.remote_head(), self.initial)
+
     def test_existing_remote_tag_is_not_replaced(self):
         self.git("tag", "v1.0.15")
         self.git("push", "origin", "v1.0.15")
@@ -153,6 +201,40 @@ else:
         self.assertNotEqual(result.returncode, 0)
         self.assertNotIn("배포 완료:", result.stdout)
         self.assertEqual(self.remote_head(), self.git("rev-parse", "HEAD").stdout.strip())
+
+    def test_failed_ci_preserves_pushed_release_without_reporting_success(self):
+        result = self.run_release(FAIL_CI="1")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertNotIn("배포 완료:", result.stdout)
+        self.assertEqual(self.remote_head(), self.git("rev-parse", "v1.0.15^{}").stdout.strip())
+        self.assertNotEqual(self.remote_head(), self.initial)
+
+    def test_draft_or_prerelease_does_not_report_success(self):
+        for variable in ("DRAFT_RELEASE", "PRERELEASE"):
+            with self.subTest(variable=variable):
+                result = self.run_release(**{variable: "1"})
+                self.assertNotEqual(result.returncode, 0)
+                self.assertNotIn("배포 완료:", result.stdout)
+                self.assertEqual(self.remote_head(), self.git("rev-parse", "HEAD").stdout.strip())
+                self.assertNotEqual(self.remote_head(), self.initial)
+
+
+@unittest.skipUnless(os.name != "nt" and shutil.which("bash") and shutil.which("git"), "POSIX Bash/Git 필요")
+class ReleaseTests(ReleaseChecks, unittest.TestCase):
+    script = "release.sh"
+    runner = ["bash"]
+
+
+@unittest.skipUnless(shutil.which("pwsh") and shutil.which("git"), "PowerShell 7/Git 필요")
+class PowerShellReleaseTests(ReleaseChecks, unittest.TestCase):
+    script = "release.ps1"
+    runner = ["pwsh", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File"]
+
+
+@unittest.skipUnless(os.name == "nt" and shutil.which("powershell") and shutil.which("git"), "Windows PowerShell 5.1/Git 필요")
+class WindowsPowerShellReleaseTests(ReleaseChecks, unittest.TestCase):
+    script = "release.ps1"
+    runner = ["powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File"]
 
 
 if __name__ == "__main__":
