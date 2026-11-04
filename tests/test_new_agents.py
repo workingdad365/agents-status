@@ -80,6 +80,77 @@ class NewAgentTests(unittest.IsolatedAsyncioTestCase):
                 self.file(f"{key}/{filename}", b"invalid")
                 self.assertEqual(SPECS[key].provider_probe(self.home, env), "unknown")
 
+    def test_qwen_provider_follows_selected_model_and_config_override(self):
+        self.file(".qwen/settings.json", b'{"security":{"auth":{"selectedType":"qwen-oauth"}}}')
+        root = self.home / "custom-qwen"
+        env = {"QWEN_HOME": str(root), "PATH": ""}
+        for provider in ("openai", "openai-responses"):
+            config = {
+                "security": {"auth": {"selectedType": provider}},
+                "model": {"name": "moonshotai/kimi-k3.1-pro"},
+                "modelProviders": {
+                    "anthropic": [{"id": "moonshotai/kimi-k3.1-pro", "name": "[Wrong] other protocol"}],
+                    provider: [
+                        {"id": "other", "name": "[Wrong] inactive model"},
+                        {"id": "moonshotai/kimi-k3.1-pro", "name": "[OpenRouter] moonshotai/kimi-k3.1-pro",
+                         "baseUrl": "https://openrouter.ai/api/v1", "envKey": "OPENROUTER_API_KEY"},
+                    ],
+                },
+            }
+            with self.subTest(provider=provider):
+                self.file("custom-qwen/settings.json", json.dumps(config).encode())
+                status = scan_agent(SPECS["qwen"], home=self.home, env=env)
+                self.assertEqual(status.status, StatusKind.CONFIG_ONLY)
+                self.assertEqual(status.provider, f"{provider} (OpenRouter)")
+
+    def test_qwen_provider_uses_only_leading_service_label(self):
+        for name, expected in (
+            ("[OpenRouter] model", "openai (OpenRouter)"),
+            ("[ Custom Service ] model [Other]", "openai (Custom Service)"),
+            ("model [OpenRouter]", "openai"),
+            ("model", "openai"),
+            ("[] model", "openai"),
+            ("[   ] model", "openai"),
+            ("[OpenRouter model", "openai"),
+            (None, "openai"),
+            (123, "openai"),
+        ):
+            config = {
+                "security": {"auth": {"selectedType": "openai"}},
+                "model": {"name": "chosen"},
+                "modelProviders": {"openai": [{"id": "chosen", "name": name}]},
+            }
+            with self.subTest(name=name):
+                self.file(".qwen/settings.json", json.dumps(config).encode())
+                self.assertEqual(SPECS["qwen"].provider_probe(self.home, {}), expected)
+
+    def test_qwen_provider_preserves_auth_type_without_matching_model(self):
+        for overrides in (
+            {"model": None},
+            {"model": []},
+            {"model": "chosen"},
+            {"model": {}},
+            {"model": {"name": 123}},
+            {"model": {"name": ""}},
+            {"model": {"name": "missing"}},
+            {"modelProviders": None},
+            {"modelProviders": []},
+            {"modelProviders": {}},
+            {"modelProviders": {"openai": None}},
+            {"modelProviders": {"openai": {"id": "chosen", "name": "[Wrong] model"}}},
+            {"modelProviders": {"openai": [None, "chosen", {}, {"id": "chosen"}]}},
+            {"model": {}, "modelProviders": {"openai": [{"name": "[Wrong] model"}]}},
+        ):
+            config = {
+                "security": {"auth": {"selectedType": "openai"}},
+                "model": {"name": "chosen"},
+                "modelProviders": {"openai": [{"id": "chosen", "name": "[OpenRouter] model"}]},
+                **overrides,
+            }
+            with self.subTest(overrides=overrides):
+                self.file(".qwen/settings.json", json.dumps(config).encode())
+                self.assertEqual(SPECS["qwen"].provider_probe(self.home, {}), "openai")
+
     def test_qoder_provider_follows_selected_model_and_config_override(self):
         self.file(".qoder/settings.json", b'{"model":{"name":"openai/other"}}')
         root = self.home / "custom-qoder"

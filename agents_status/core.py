@@ -302,9 +302,27 @@ def _qwen(home: Path, env: Mapping[str, str]) -> str:
     try:
         config = json.loads(_read(_agent_home(home, env, "qwen") / "settings.json"))
         provider = config.get("security", {}).get("auth", {}).get("selectedType")
-        return provider if isinstance(provider, str) and provider else "unknown"
     except (json.JSONDecodeError, AttributeError):
         return "unknown"
+    if not isinstance(provider, str) or not provider:
+        return "unknown"
+    model = config.get("model")
+    providers = config.get("modelProviders")
+    if not isinstance(model, dict) or not isinstance(providers, dict):
+        return provider
+    selected_model = model.get("name")
+    models = providers.get(provider)
+    if not isinstance(selected_model, str) or not selected_model or not isinstance(models, list):
+        return provider
+    for entry in models:
+        if not isinstance(entry, dict) or entry.get("id") != selected_model:
+            continue
+        name = entry.get("name")
+        match = re.match(r"\[([^\[\]]+)\]", name) if isinstance(name, str) else None
+        if match and (service := match.group(1).strip()):
+            return f"{provider} ({service})"
+        return provider
+    return provider
 
 
 def _qoder(home: Path, env: Mapping[str, str]) -> str:
