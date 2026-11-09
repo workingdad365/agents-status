@@ -1282,7 +1282,7 @@ async def _kill_update_tree(process: asyncio.subprocess.Process) -> None:
 
 async def run_update(
     command: UpdateCommand,
-    timeout: float = 600,
+    timeout: float = 1800,
     on_output: Callable[[str], None] | None = None,
 ) -> CommandResult:
     process: asyncio.subprocess.Process | None = None
