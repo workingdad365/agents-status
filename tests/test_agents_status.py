@@ -381,7 +381,10 @@ class UpdateTests(unittest.TestCase):
                     executable = Path("/opt/bin") / spec.binaries[0]
                     status = AgentStatus(spec, StatusKind.INSTALLED, executable, "1.0", "unknown")
                     command, reason = update_command(status)
-                    self.assertEqual(command.argv, (str(executable), *spec.update_args))
+                    if spec.key == "qwen" and sys.platform == "win32":
+                        self.assertIn(f"& '{executable}' update", command.argv[-1])
+                    else:
+                        self.assertEqual(command.argv, (str(executable), *spec.update_args))
                     self.assertEqual(reason, "")
 
     @unittest.skipIf(sys.platform == "win32", "POSIX npm placeholder 검증")

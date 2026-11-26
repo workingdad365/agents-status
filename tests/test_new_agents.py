@@ -6,10 +6,11 @@ import subprocess
 import tempfile
 import unittest
 from unittest.mock import patch
+import zipfile
 
 from agents_status.core import (
-    AGENTS, AgentStatus, StatusKind, config_paths, install_command,
-    run_uninstall, scan_agent, uninstall_plan, update_command,
+    AGENTS, AgentStatus, StatusKind, UpdateCommand, config_paths, install_command,
+    run_uninstall, run_update, scan_agent, uninstall_plan, update_command,
 )
 from agents_status.instructions import sync_instructions
 
@@ -51,9 +52,13 @@ class NewAgentTests(unittest.IsolatedAsyncioTestCase):
                         self.assertEqual(reason, "")
                         self.assertIn(host, command.display)
                         self.assertIn("LASTEXITCODE" if platform == "win32" else "pipefail", " ".join(command.argv))
-                command, reason = update_command(status)
-                self.assertEqual(reason, "")
-                self.assertEqual(command.argv[1:], args)
+                        command, reason = update_command(status)
+                        self.assertEqual(reason, "")
+                        if key == "qwen" and platform == "win32":
+                            self.assertEqual(command.argv[0], "powershell")
+                            self.assertIn(f"& '{status.executable}' update", command.argv[-1])
+                        else:
+                            self.assertEqual(command.argv[1:], args)
             with patch("agents_status.core._which", return_value=None):
                 self.assertIsNone(install_command(status)[0])
 
@@ -150,6 +155,94 @@ class NewAgentTests(unittest.IsolatedAsyncioTestCase):
             with self.subTest(overrides=overrides):
                 self.file(".qwen/settings.json", json.dumps(config).encode())
                 self.assertEqual(SPECS["qwen"].provider_probe(self.home, {}), "openai")
+
+    @unittest.skipUnless(os.name == "nt", "Windows PowerShell 자식 프로세스의 압축 해제 검증")
+    async def test_qwen_install_and_update_isolate_inherited_powershell_modules(self):
+        shell = shutil.which("powershell.exe", path=self.process_environment.get("PATH", ""))
+        if not shell:
+            self.skipTest("Windows PowerShell이 없음")
+        modules = self.home / "incompatible modules"
+        self.file("incompatible modules/Microsoft.PowerShell.Archive/Microsoft.PowerShell.Archive.psd1",
+                  b"@{ RootModule = 'Microsoft.PowerShell.Archive.psm1'; ModuleVersion = '99.0.0' }")
+        self.file("incompatible modules/Microsoft.PowerShell.Archive/Microsoft.PowerShell.Archive.psm1",
+                  b"function Expand-Archive { throw 'incompatible archive module' }")
+        archive = self.home / "qwen.zip"
+        with zipfile.ZipFile(archive, "w") as stream:
+            stream.writestr("qwen-code/bin/qwen.cmd", "@echo off")
+        launcher = self.file("Qwen user's tools/qwen.cmd", (
+            '@echo off\r\n'
+            'echo ARG:%~1\r\n'
+            'powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command '
+            '"$ErrorActionPreference = \'Stop\'; '
+            'Expand-Archive -LiteralPath $env:QWEN_TEST_ARCHIVE -DestinationPath $env:QWEN_TEST_EXTRACT -Force; '
+            'exit ([int]$env:QWEN_TEST_EXIT_CODE)"\r\n'
+            'exit /b %ERRORLEVEL%\r\n'
+        ).encode())
+        root = self.home / "Qwen user's install/custom lib/qwen-code"
+        inner = self.file("Qwen user's install/custom lib/qwen-code/bin/qwen.cmd", b"@exit /b 91")
+        self.file("Qwen user's install/custom lib/qwen-code/node/node.exe", b"MZ")
+        self.file("Qwen user's install/custom lib/qwen-code/manifest.json",
+                  b'{"name":"@qwen-code/qwen-code","runtime":"node","version":"1.2.3"}')
+        wrapper = self.file("Qwen user's install/custom bin/qwen.cmd",
+                            f'@echo off\ncall "{inner}" %*\n'.encode())
+        environment = {
+            **self.process_environment,
+            "PSModulePath": str(modules),
+            "QWEN_TEST_ARCHIVE": str(archive),
+            "QWEN_TEST_VERSION": "8.7.6",
+            "QWEN_INSTALL_ROOT": "original root",
+        }
+        body = (
+            "Write-Output ('ARGS:' + ($args -join ',')); "
+            "Write-Output ('ROOT:' + $env:QWEN_INSTALL_ROOT); "
+            "Write-Output ('LIB:' + $env:QWEN_INSTALL_LIB_DIR); "
+            "Write-Output ('BIN:' + $env:QWEN_INSTALL_BIN_DIR); "
+            "& '" + str(launcher).replace("'", "''") + "'"
+        )
+        stub = (
+            "function Invoke-RestMethod { param($Uri, $TimeoutSec); "
+            "if ($Uri -like 'https://registry.npmjs.org/*') { return @{version=$env:QWEN_TEST_VERSION} }; "
+            "'" + body.replace("'", "''") + "' }; "
+        )
+        for action in ("install", "update", "standalone-wrapper", "standalone-direct"):
+            for code in (0, 7):
+                with self.subTest(action=action, code=code):
+                    destination = self.home / f"{action}-{code}"
+                    env = {**environment, "QWEN_TEST_EXTRACT": str(destination), "QWEN_TEST_EXIT_CODE": str(code)}
+                    with patch.dict(os.environ, env, clear=True), patch("agents_status.core._which", return_value=shell):
+                        executable = {"standalone-wrapper": wrapper, "standalone-direct": inner}.get(action, launcher)
+                        status = self.status("qwen", executable)
+                        command, reason = (install_command if action == "install" else update_command)(status)
+                        self.assertEqual(reason, "")
+                        if action != "update":
+                            command = UpdateCommand((*command.argv[:-1], stub + command.argv[-1]), command.display)
+                        result = await run_update(command, timeout=30)
+                        self.assertEqual(os.environ["PSModulePath"], str(modules))
+                        self.assertEqual(os.environ["QWEN_INSTALL_ROOT"], "original root")
+                    self.assertEqual(result.returncode, code, result.output)
+                    self.assertEqual((destination / "qwen-code/bin/qwen.cmd").read_text(), "@echo off")
+                    if action == "update":
+                        self.assertIn("ARG:update", result.output)
+                    elif action.startswith("standalone"):
+                        bin_dir = wrapper.parent if action == "standalone-wrapper" else root.parent / "bin"
+                        self.assertIn("ARGS:--method,standalone,--version,8.7.6,--no-modify-path", result.output)
+                        for prefix, expected in (("ROOT:", root.parent), ("LIB:", root), ("BIN:", bin_dir)):
+                            value = next(line.removeprefix(prefix) for line in result.output.splitlines() if line.startswith(prefix))
+                            self.assertEqual(Path(value).resolve(), expected.resolve())
+        for version in ("", "latest", "1.2.3; Write-Output invalid", "1.2.3", "1.2.2"):
+            with self.subTest(no_install_version=version):
+                env = {**environment, "QWEN_TEST_VERSION": version}
+                with patch.dict(os.environ, env, clear=True), patch("agents_status.core._which", return_value=shell):
+                    command, _ = update_command(self.status("qwen", wrapper))
+                    command = UpdateCommand((*command.argv[:-1], stub + command.argv[-1]), command.display)
+                    result = await run_update(command, timeout=30)
+                if version in ("1.2.3", "1.2.2"):
+                    self.assertEqual(result.returncode, 0, result.output)
+                    self.assertIn("is up to date", result.output)
+                else:
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn("Invalid Qwen Code release version", result.output)
+                self.assertNotIn("ARGS:", result.output)
 
     def test_qoder_provider_follows_selected_model_and_config_override(self):
         self.file(".qoder/settings.json", b'{"model":{"name":"openai/other"}}')

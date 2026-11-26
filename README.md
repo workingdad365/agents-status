@@ -171,6 +171,8 @@ Hermes는 `HERMES_HOME`을 우선하며 Windows 기본 경로는 `%LOCALAPPDATA%
 
 Kimi Code·Qwen Code·Qoder CLI는 공식 설치 스크립트를 사용하며 각각 `kimi upgrade --yes`, `qwen update`, `qodercli update`로 갱신함. npm/Bun/Homebrew 설치가 확인되면 해당 패키지 관리자로 갱신·삭제함. 설정과 지침 경로는 각각 `KIMI_CODE_HOME`, `QWEN_HOME`, `QODER_CONFIG_DIR`을 반영함. Qoder의 프로바이더는 `settings.json`의 `model.name`에서 제공자 접두사를 읽으며, 기본 서비스 모델은 `qoder`로 표시함.
 
+Windows에서 Qwen Code의 공식 설치 / 자체 업데이트 명령은 Windows PowerShell 5.1로 실행하고, 자식 프로세스의 `PSModulePath`를 해당 셸의 기본 모듈 경로로 제한함. PowerShell 7용 압축 모듈이 상속되어 발생하는 `ExtractToDirectory` 오류를 방지함. standalone 설치의 업데이트는 npm 레지스트리에서 최신 버전을 조회한 뒤 공식 설치기에 버전과 기존 설치 경로를 전달함. 자체 updater의 종료 후 교체 대기를 피하며 설정과 사용자 PATH를 보존함.
+
 블록 교체는 `GLOBAL_INSTRUCTIONS:BEGIN`과 `GLOBAL_INSTRUCTIONS:END` 마커 사이만 갱신하며 나머지 내용을 보존함. 원본 파일이 비어 있거나 읽을 수 없으면 동기화하지 않음.
 
 ## 제거

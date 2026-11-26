@@ -738,15 +738,53 @@ def _codex_packages(home: Path | None = None) -> Path:
     return Path(os.environ.get("CODEX_HOME", str(base / ".codex"))) / "packages"
 
 
+_QWEN_WINDOWS_INSTALLER = "https://qwen-code-assets.oss-cn-hangzhou.aliyuncs.com/installation/install-qwen-standalone.ps1"
+
+
+def _qwen_windows_command(script: str) -> tuple[UpdateCommand | None, str]:
+    shell = _which("powershell")
+    if not shell:
+        return None, "Qwen Code 설치 / 업데이트에는 Windows PowerShell이 필요합니다."
+    # Qwen이 내부에서 호출하는 PowerShell 5.1에 PowerShell 7 모듈이 상속되지 않도록 분리함.
+    script = (
+        "$ErrorActionPreference = 'Stop'; $global:LASTEXITCODE = 0; "
+        '$env:PSModulePath = "$PSHOME\\Modules"; '
+        f"{script}; exit $LASTEXITCODE"
+    )
+    return UpdateCommand((shell, "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script), script), ""
+
+
+def _qwen_windows_update(executable: Path, root: Path) -> tuple[UpdateCommand | None, str]:
+    # 자체 updater의 종료 후 교체 대기를 피하고 공식 설치기로 기존 설치 경로를 갱신함.
+    # 번들 내부 런처를 발견한 경우 외부 bin에 wrapper를 두어 자기 자신을 호출하지 않도록 함.
+    bin_dir = root.parent / "bin" if executable.resolve().is_relative_to(root.resolve()) else executable.parent
+    script = (
+        "$version = (irm 'https://registry.npmjs.org/@qwen-code/qwen-code/latest' -TimeoutSec 30).version; "
+        "if ($version -notmatch '^[0-9]+\\.[0-9]+\\.[0-9]+$') { throw 'Invalid Qwen Code release version' }; "
+    )
+    current = _json_string(root / "manifest.json", "version")
+    if re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", current):
+        script += (
+            f"if ([version]$version -le [version]'{current}') {{ "
+            f"Write-Output 'Qwen Code {current} is up to date!'; exit 0 }}; "
+        )
+    for name, path in (("ROOT", root.parent), ("LIB_DIR", root), ("BIN_DIR", bin_dir)):
+        script += f"$env:QWEN_INSTALL_{name} = '{str(path).replace(chr(39), chr(39) * 2)}'; "
+    script += f"& ([scriptblock]::Create((irm {_QWEN_WINDOWS_INSTALLER}))) --method standalone --version $version --no-modify-path"
+    return _qwen_windows_command(script)
+
+
 def install_command(status: AgentStatus) -> tuple[UpdateCommand | None, str]:
     if status.spec.key in ("kimi", "qwen", "qoder"):
         unix, windows = {
             "kimi": ("https://code.kimi.com/kimi-code/install.sh", "https://code.kimi.com/kimi-code/install.ps1"),
             "qwen": ("https://qwen-code-assets.oss-cn-hangzhou.aliyuncs.com/installation/install-qwen-standalone.sh",
-                     "https://qwen-code-assets.oss-cn-hangzhou.aliyuncs.com/installation/install-qwen-standalone.ps1"),
+                     _QWEN_WINDOWS_INSTALLER),
             "qoder": ("https://qoder.com/install", "https://qoder.com/install.ps1"),
         }[status.spec.key]
         if sys.platform == "win32":
+            if status.spec.key == "qwen":
+                return _qwen_windows_command(f"& ([scriptblock]::Create((irm {windows})))")
             shell = _which("pwsh") or _which("powershell")
             if not shell:
                 return None, f"{status.spec.name} 설치에는 PowerShell이 필요합니다."
@@ -1217,6 +1255,11 @@ def update_command(status: AgentStatus, *, home: Path | None = None) -> tuple[Up
         command = _package_update(status.executable, _package_names(spec.key))
         if command:
             return command, ""
+    if spec.key == "qwen" and sys.platform == "win32":
+        if root := _qwen_standalone(status.executable):
+            return _qwen_windows_update(status.executable, root)
+        executable = str(status.executable).replace("'", "''")
+        return _qwen_windows_command(f"& '{executable}' update")
     if spec.key in ("claude", "commandcode", "opencode", "pi-bolt"):
         names = _package_names(spec.key)
         command = _package_update(status.executable, names)
